@@ -10,7 +10,7 @@ const {
     LAMPORTS_PER_SOL, 
     Transaction, 
     sendAndConfirmTransaction,
-    TransactionInstruction // Needed for manual instruction building
+    TransactionInstruction 
 } = require('@solana/web3.js');
 const { Program, AnchorProvider, Wallet } = require('@coral-xyz/anchor');
 const anchor = require('@coral-xyz/anchor');
@@ -19,9 +19,10 @@ const bs58 = require('bs58');
 const axios = require('axios');
 const FormData = require('form-data');
 const { Readable } = require('stream');
-// Imported to manually serialize instruction data
-const borsh = require('borsh'); 
+// --- CORRECTED BORSH IMPORT ---
 const { Buffer } = require('buffer'); 
+// No need to explicitly import borsh package here as Anchor provides its utilities,
+// but we rely on the @coral-xyz/borsh package being installed.
 
 
 // --- CONFIGURATION & PROGRAM IDS ---
@@ -86,11 +87,10 @@ const connection = new Connection(RPC_ENDPOINT, "confirmed");
 const provider = new AnchorProvider(connection, wallet, { commitment: "confirmed" });
 const creatorPubkey = wallet.publicKey;
 
-// --- ANCHOR IDL (Minimal structure used only for Program object creation) ---
+// --- ANCHOR IDL (FINAL CLEANUP) ---
 const PUMP_IDL = {
   "version": "0.1.0",
   "name": "pump",
-  // We only include the non-problematic instructions here to create the Program object
   "instructions": [
     {
       "name": "createV2",
@@ -121,6 +121,58 @@ const PUMP_IDL = {
       ]
     },
     {
+      "name": "buyExactSolIn", 
+      "accounts": [
+        { "name": "global", "isMut": false, "isSigner": false },
+        { "name": "feeRecipient", "isMut": true, "isSigner": false },
+        { "name": "mint", "isMut": false, "isSigner": false },
+        { "name": "bondingCurve", "isMut": true, "isSigner": false },
+        { "name": "associatedBondingCurve", "isMut": true, "isSigner": false },
+        { "name": "associatedUser", "isMut": true, "isSigner": false },
+        { "name": "user", "isMut": true, "isSigner": true },
+        { "name": "systemProgram", "isMut": false, "isSigner": false },
+        { "name": "tokenProgram", "isMut": false, "isSigner": false },
+        { "name": "creatorVault", "isMut": true, "isSigner": false },
+        { "name": "eventAuthority", "isMut": false, "isSigner": false },
+        { "name": "program", "isMut": false, "isSigner": false },
+        { "name": "globalVolumeAccumulator", "isMut": false, "isSigner": false },
+        { "name": "userVolumeAccumulator", "isMut": true, "isSigner": false },
+        { "name": "feeConfig", "isMut": false, "isSigner": false },
+        { "name": "feeProgram", "isMut": false, "isSigner": false }
+      ],
+      "args": [
+        { "name": "spendableSolIn", "type": "u64" },
+        { "name": "minTokensOut", "type": "u64" },
+        { "name": "trackVolume", "type": { "option": "bool" } } 
+      ]
+    },
+    {
+        "name": "sellTokens", 
+        "accounts": [
+            { "name": "global", "isMut": false, "isSigner": false },
+            { "name": "feeRecipient", "isMut": true, "isSigner": false },
+            { "name": "mint", "isMut": false, "isSigner": false },
+            { "name": "bondingCurve", "isMut": true, "isSigner": false },
+            { "name": "associatedBondingCurve", "isMut": true, "isSigner": false },
+            { "name": "associatedUser", "isMut": true, "isSigner": false },
+            { "name": "user", "isMut": true, "isSigner": true },
+            { "name": "systemProgram", "isMut": false, "isSigner": false },
+            { "name": "tokenProgram", "isMut": false, "isSigner": false },
+            { "name": "creatorVault", "isMut": true, "isSigner": false },
+            { "name": "eventAuthority", "isMut": false, "isSigner": false },
+            { "name": "program", "isMut": false, "isSigner": false },
+            { "name": "globalVolumeAccumulator", "isMut": false, "isSigner": false },
+            { "name": "userVolumeAccumulator", "isMut": true, "isSigner": false },
+            { "name": "feeConfig", "isMut": false, "isSigner": false },
+            { "name": "feeProgram", "isMut": false, "isSigner": false }
+        ],
+        "args": [
+            { "name": "amountTokensIn", "type": "u64" },
+            { "name": "minSolOut", "type": "u64" },
+            { "name": "trackVolume", "type": { "option": "bool" } } 
+        ]
+    },
+    {
         "name": "collectCreatorFee",
         "accounts": [
             { "name": "creator", "isMut": true, "isSigner": false },
@@ -132,6 +184,7 @@ const PUMP_IDL = {
         "args": []
     }
   ]
+  // Removed types block entirely
 };
 
 const program = new Program(PUMP_IDL, PUMP_PROGRAM_ID, provider);
@@ -140,27 +193,13 @@ const program = new Program(PUMP_IDL, PUMP_PROGRAM_ID, provider);
 
 // 8 bytes discriminator + argument data
 const BUY_IX_DISCRIMINATOR = Buffer.from([56, 252, 116, 8, 158, 223, 205, 95]); // Hash of 'buyExactSolIn'
-const SELL_IX_DISCRIMINATOR = Buffer.from([51, 230, 133, 164, 1, 127, 131, 173]); // Hash of 'sell'
+const SELL_IX_DISCRIMINATOR = Buffer.from([51, 230, 133, 164, 1, 127, 131, 173]); // Hash of 'sellTokens'
 
-// Defines how the arguments for buyExactSolIn are serialized (Borsh format)
-const BUY_IX_SCHEMA = {
-    struct: {
-        spendableSolIn: 'u64',
-        minTokensOut: 'u64',
-        // Option<bool> is serialized as a 1-byte presence flag (0 or 1) followed by the data (1 byte bool).
-        // Since we always pass true, we write 1 (Some) then 1 (true).
-        // However, Anchor uses a specific structure for method calls.
-        // We'll treat this as a simple boolean, but manually append the Option byte.
-        trackVolume: 'u8', // We'll manually serialize this, but define it as a u8 placeholder for now
-    }
-};
-
-
-// --- Manual Instruction Builder Function ---
 
 // Encodes the BUY instruction data (Discriminator + Args)
 function encodeBuyInstructionData(spendableSolIn, minTokensOut, trackVolume) {
-    const buffer = new anchor.utils.Buffer(20); // 8 bytes discriminator + 8 bytes u64 + 4 bytes padding (just in case)
+    // 8 bytes discriminator + 8 bytes u64 + 8 bytes u64 + 2 bytes Option<bool>
+    const buffer = new anchor.utils.Buffer(26); 
     let offset = 0;
 
     // 1. Write Discriminator
@@ -174,8 +213,6 @@ function encodeBuyInstructionData(spendableSolIn, minTokensOut, trackVolume) {
     offset += 8;
 
     // 3. Write Option<bool> (TrackVolume)
-    // Anchor runtime expects an object like { some: true }. When manually encoding, 
-    // Option<bool>::Some(true) is [1, 1]. Option::None is [0].
     if (trackVolume === true) {
         buffer.writeUInt8(1, offset++); // Option::Some
         buffer.writeUInt8(1, offset++); // bool value (true)
@@ -189,7 +226,8 @@ function encodeBuyInstructionData(spendableSolIn, minTokensOut, trackVolume) {
 
 // Encodes the SELL instruction data (Discriminator + Args)
 function encodeSellInstructionData(amountTokensIn, minSolOut, trackVolume) {
-    const buffer = new anchor.utils.Buffer(24); 
+    // 8 bytes discriminator + 8 bytes u64 + 8 bytes u64 + 2 bytes Option<bool>
+    const buffer = new anchor.utils.Buffer(26); 
     let offset = 0;
 
     // 1. Write Discriminator
@@ -465,6 +503,7 @@ async function buyInitialSupply(mintPubkey, bondingCurvePubkey) {
     
     console.log(`[Dev Buy] Initiating ${STATIC_BUY_AMOUNT_SOL} SOL purchase...`);
     
+    // 1. Calculate required PDAs and ATAs
     const associatedUser = await getAssociatedTokenAddress(
         mintPubkey,
         creatorPubkey,
@@ -616,9 +655,10 @@ async function sellAllTokens(mintPubkey, bondingCurvePubkey, associatedUserPubke
     
     const sellSig = await sendAndConfirmTransaction(connection, transaction, [walletKeyPair], { 
         commitment: 'confirmed',
-        skipPreflight: true 
-    });
+            skipPreflight: true 
+        });
 
+    console.log(`[Dev Sell] ✅ Sell confirmed. Tx: ${sellSig}`);
     return sellSig;
 }
 
@@ -691,7 +731,6 @@ app.post('/deploy', upload.single('imageFile'), async (req, res) => {
         let sellTxSig = "N/A";
         
         // --- 4. EXECUTE INITIAL BUY (Transaction 2) ---
-        // This now uses the manually encoded instruction
         const { signature: initialBuySig, ata: associatedUserPubkey } = await buyInitialSupply(
             mintKeypair.publicKey, 
             bondingCurve
@@ -703,7 +742,6 @@ app.post('/deploy', upload.single('imageFile'), async (req, res) => {
         await new Promise(resolve => setTimeout(resolve, 1000));
         
         // --- 6. EXECUTE SELL (Transaction 3) ---
-        // This now uses the manually encoded instruction
         sellTxSig = await sellAllTokens(
             mintKeypair.publicKey, 
             bondingCurve, 

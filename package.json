@@ -1,6 +1,6 @@
 {
   "name": "pumpfun-backend-service",
-  "version": "4.2.0",
+  "version": "4.2.1",
   "description": "Backend service to deploy Pump.fun tokens using official IDL (Backend IPFS + Gemini Moderation)",
   "main": "server.js",
   "scripts": {
@@ -18,7 +18,7 @@
     "multer": "^1.4.5-lts.1",
     "form-data": "^4.0.0",
     "node-fetch": "^3.3.2",
-    "borsh": "^0.9.0"
+    "@coral-xyz/borsh": "^0.29.0"
   },
   "devDependencies": {
     "typescript": "^5.3.3",
