@@ -81,7 +81,7 @@ const connection = new Connection(RPC_ENDPOINT, "confirmed");
 const provider = new AnchorProvider(connection, wallet, { commitment: "confirmed" });
 const creatorPubkey = wallet.publicKey;
 
-// --- ANCHOR IDL (FIXED TYPE USAGE) ---
+// --- ANCHOR IDL (FINAL CLEANUP) ---
 const PUMP_IDL = {
   "version": "0.1.0",
   "name": "pump",
@@ -137,8 +137,8 @@ const PUMP_IDL = {
       "args": [
         { "name": "spendableSolIn", "type": "u64" },
         { "name": "minTokensOut", "type": "u64" },
-        // **FIXED:** Use the external OptionBool type by name
-        { "name": "trackVolume", "type": { "defined": "OptionBool" } } 
+        // **FINAL FIX:** Define type explicitly as Anchor Option<bool>
+        { "name": "trackVolume", "type": { "option": "bool" } } 
       ]
     },
     {
@@ -164,8 +164,8 @@ const PUMP_IDL = {
         "args": [
             { "name": "amountTokensIn", "type": "u64" },
             { "name": "minSolOut", "type": "u64" },
-            // **FIXED:** Use the external OptionBool type by name
-            { "name": "trackVolume", "type": { "defined": "OptionBool" } } 
+            // **FINAL FIX:** Define type explicitly as Anchor Option<bool>
+            { "name": "trackVolume", "type": { "option": "bool" } } 
         ]
     },
     {
@@ -179,20 +179,9 @@ const PUMP_IDL = {
         ],
         "args": []
     }
-  ],
-  // Correctly define the OptionBool type as an enum that contains a value
-  "types": [
-    {
-      "name": "OptionBool",
-      "type": {
-        "kind": "enum",
-        "variants": [
-          { "name": "None" },
-          { "name": "Some", "fields": [ { "name": "value", "type": "bool" } ] }
-        ]
-      }
-    }
   ]
+  // Removed the custom 'types' definition block entirely, as it was conflicting 
+  // with Anchor's internal handling of Option<bool> when referenced by name.
 };
 
 const program = new Program(PUMP_IDL, PUMP_PROGRAM_ID, provider);
@@ -356,7 +345,7 @@ async function uploadMetadataToIPFS(metadata, imageUrl) {
 }
 
 
-// --- HELPER: Verify User Payment (Unchanged) ---
+// --- HELPER: Verify User Payment (Unchanged functionality) ---
 async function verifyPayment(signature) {
     if (processedSignatures.has(signature)) {
         throw new Error("Transaction already processed (replay detected)");
@@ -386,7 +375,7 @@ async function verifyPayment(signature) {
     return true;
 }
 
-// --- CORE LOGIC: COLLECT FEES LOOP (Unchanged) ---
+// --- CORE LOGIC: COLLECT FEES LOOP (Unchanged functionality) ---
 async function collectCreatorFees() {
     const creatorPubkey = wallet.publicKey;
 
@@ -502,9 +491,11 @@ async function buyInitialSupply(mintPubkey, bondingCurvePubkey) {
     }
     
     // 2. Buy Instruction
-    // The OptionBool parameter for trackVolume must be handled using the correct structure.
+    // Anchor expects the enum value when the field type is Option<T>. 
+    // Option<bool> is serialized as Option::Some(true) or Option::None.
     const buyIx = await program.methods
-        .buyExactSolIn(new anchor.BN(buyAmountLamports), new anchor.BN(1), { some: true }) // Use { some: true } to pass Option<bool>::Some(true)
+        // Pass Option::Some(true) using { some: true }
+        .buyExactSolIn(new anchor.BN(buyAmountLamports), new anchor.BN(1), { some: true }) 
         .accounts({
             global: GLOBAL_PDA,
             feeRecipient: creatorPubkey, 
@@ -585,7 +576,7 @@ async function sellAllTokens(mintPubkey, bondingCurvePubkey, associatedUserPubke
 
     // 2. Sell Instruction
     const sellIx = await program.methods
-        .sellTokens(tokenBalanceBN, new anchor.BN(1), { some: true }) // Use { some: true } to pass Option<bool>::Some(true)
+        .sellTokens(tokenBalanceBN, new anchor.BN(1), { some: true }) // Option::Some(true)
         .accounts({
             global: GLOBAL_PDA,
             feeRecipient: creatorPubkey, 
@@ -668,7 +659,7 @@ app.post('/deploy', upload.single('imageFile'), async (req, res) => {
                 mint: mintKeypair.publicKey,
                 mintAuthority: mintAuthority,
                 bondingCurve: bondingCurve,
-                associatedBondingCurve: associatedAssociatedBondingCurve,
+                associatedBondingCurve: associatedBondingCurve,
                 global: GLOBAL_PDA,
                 user: creatorPubkey,
                 systemProgram: SYSTEM_PROGRAM_ID,
