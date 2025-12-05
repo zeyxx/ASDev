@@ -3,489 +3,229 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pump.fun V2 Token Launcher (Themed)</title>
-    
-    <!-- React & ReactDOM -->
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    
-    <!-- Babel for JSX -->
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    
-    <!-- Tailwind CSS -->
+    <title>Protocol Launcher</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    
-    <!-- Solana Web3.js -->
-    <script src="https://unpkg.com/@solana/web3.js@1.91.7/lib/index.iife.min.js"></script>
-    
-    <!-- Custom Fonts: Comic Neue and JetBrains Mono -->
+    <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
-
     <style>
-        /* BASE THEME STYLES FROM frontend.html */
-        #pump-app {
-            font-family: 'Comic Neue', cursive; 
-            background-color: #451a03; 
-            color: #ffedd5;
-            min-height: 100vh;
-            position: relative;
+        /* TERMINAL FIRE THEME */
+        body { background-color: #2a1005; color: #ffedd5; font-family: 'Comic Neue', cursive; min-height: 100vh; display: flex; justify-content: center; padding-top: 40px; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        
+        #app-container {
+            width: 100%; max-width: 600px;
+            background-color: #451a03;
             border: 6px solid #7c2d12;
             border-radius: 16px;
             overflow: hidden;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.8);
         }
-        #pump-app .font-mono { font-family: 'JetBrains Mono', monospace; }
+
+        .ticker-wrap { width: 100%; background-color: #2a1005; border-bottom: 2px solid #7c2d12; overflow: hidden; white-space: nowrap; height: 32px; display: flex; align-items: center; }
+        .ticker { display: inline-block; padding-left: 100%; animation: marquee 20s linear infinite; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #fb923c; }
+        @keyframes marquee { 0% { transform: translate(0, 0); } 100% { transform: translate(-100%, 0); } }
 
         .panel {
             background: rgba(20, 10, 5, 0.6);
             border: 2px solid #ea580c;
             border-radius: 8px;
             box-shadow: 4px 4px 0 #9a3412;
+            padding: 24px;
+            margin-bottom: 24px;
         }
 
-        .input-field { 
-            background: #2a1005; 
-            border: 2px solid #ea580c; 
-            color: white; 
-            font-family: 'JetBrains Mono', monospace; 
-            outline: none; 
-            box-shadow: 2px 2px 0 #9a3412;
-            transition: all 0.1s;
-        }
-        .input-field:focus { 
-            border-color: #fb923c;
-            box-shadow: 2px 2px 0 #ea580c;
-        }
-        textarea.input-field { resize: none; }
-        
-        .btn-action { 
-            text-transform: uppercase; 
-            font-weight: bold; 
-            transition: all 0.1s; 
-            border: 2px solid;
-            background: #7f1d1d; 
-            border-color: #ef4444; 
-            color: #fca5a5; 
-            box-shadow: 4px 4px 0 #9a3412;
-        }
-        .btn-action:active:not(:disabled) { 
-            transform: translate(2px, 2px);
-            box-shadow: 2px 2px 0 #9a3412;
-        }
-        .btn-action:disabled { 
-            opacity: 0.5; 
-            cursor: not-allowed; 
-            filter: grayscale(100%); 
-            transform: none; 
-            box-shadow: 2px 2px 0 #9a3412;
-        }
-        
-        .btn-connect {
-            background: #fb923c;
-            border-color: #ea580c;
-            color: #451a03;
+        .input-field {
+            background: #2a1005;
+            border: 2px solid #7c2d12;
+            color: #fb923c;
             font-family: 'JetBrains Mono', monospace;
-            box-shadow: 2px 2px 0 #9a3412;
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 16px;
+            outline: none;
+            transition: border-color 0.2s;
         }
-        .btn-connect:hover { background: #ea580c; }
+        .input-field:focus { border-color: #ea580c; }
         
-        .spinner { border-top-color: #fff; border-left-color: #fff; }
+        .btn-action {
+            background: #ea580c; border: 2px solid #9a3412;
+            color: #2a1005; font-weight: bold; font-family: 'JetBrains Mono';
+            text-transform: uppercase; width: 100%; padding: 14px;
+            cursor: pointer; transition: all 0.1s;
+            box-shadow: 2px 2px 0 #7c2d12;
+        }
+        .btn-action:hover { background: #f97316; transform: translate(-1px, -1px); box-shadow: 3px 3px 0 #7c2d12; }
+        .btn-action:active { transform: translate(2px, 2px); box-shadow: 0 0 0; }
+        .btn-action:disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(100%); }
 
-        /* Custom error message box */
-        .status-error {
-            background: rgba(127, 29, 29, 0.5); /* red-900/50 */
-            border: 2px solid #ef4444; /* red-500 */
-            color: #fca5a5; /* red-300 */
-            box-shadow: 2px 2px 0 #7f1d1d;
+        .status-box {
+            background: rgba(0,0,0,0.3); border: 1px solid #ea580c;
+            color: #fdba74; padding: 10px; font-size: 12px; font-family: 'JetBrains Mono';
+            text-align: center; margin-top: 10px; display: none;
         }
-        .status-success {
-            background: rgba(20, 83, 45, 0.5); /* green-900/50 */
-            border: 2px solid #22c55e; /* green-500 */
-            color: #4ade80; /* green-300 */
-            box-shadow: 2px 2px 0 #14532d;
-        }
+        .status-success { border-color: #22c55e; color: #4ade80; background: rgba(20, 83, 45, 0.3); }
+        .status-error { border-color: #ef4444; color: #fca5a5; background: rgba(127, 29, 29, 0.3); }
     </style>
 </head>
 <body>
-    <div id="pump-app" class="p-4">
-        <div id="root"></div>
-    </div>
 
-    <script type="text/babel">
-        const { useState, useEffect } = React;
-        const { Connection, PublicKey, Transaction, SystemProgram, LAMPORTS_PER_SOL } = solanaWeb3;
+<div id="app-container">
+    <div class="ticker-wrap"><div class="ticker">INITIALIZING LAUNCH SEQUENCE... PUMP FUN DEPLOYER READY... WAITING FOR INPUT...</div></div>
 
-        // --- CONFIGURATION ---
-        const DEV_WALLET_ADDRESS = "FNLWHjvjptwC7LxycdK3Knqcv5ptC19C9rynn6u2S1tB"; 
-        const FEE_AMOUNT_SOL = 0.05; 
-        const STATIC_BUY_AMOUNT_SOL = 0.01;
-        
-        // --- RENDER BACKEND URL ---
-        const BACKEND_URL = "https://asdev-1kvy.onrender.com"; 
+    <div class="p-6">
+        <div class="flex justify-between items-center mb-6 border-b-4 border-orange-900 pb-4">
+            <div class="flex items-center gap-3">
+                <div class="text-4xl animate-bounce">🔥</div>
+                <div>
+                    <h1 class="text-3xl font-bold text-white">IGNITION</h1>
+                    <p class="text-orange-400 text-xs font-mono uppercase">Protocol Launchpad</p>
+                </div>
+            </div>
+            <button id="connect-btn" class="bg-black border border-orange-500 text-orange-500 px-4 py-2 rounded font-mono text-xs hover:bg-orange-900/20">CONNECT WALLET</button>
+        </div>
 
-        const App = () => {
-            const [walletAddress, setWalletAddress] = useState(null);
-            const [isLoading, setIsLoading] = useState(false);
-            const [status, setStatus] = useState({ type: '', message: '' });
-            const [imageFile, setImageFile] = useState(null);
-            const [imagePreviewUrl, setImagePreviewUrl] = useState('');
+        <div class="panel">
+            <h3 class="text-orange-500 font-mono text-sm mb-4 uppercase tracking-widest border-b border-orange-900/50 pb-2">Token Parameters</h3>
             
-            // Form State
-            const [formData, setFormData] = useState({
-                name: '',
-                ticker: '',
-                description: '',
-                twitter: '',
-                website: '',
-                telegram: '',
-                isMayhemMode: false,
-                acceptedTOS: false,
+            <label class="block text-xs text-orange-300 font-mono mb-1">NAME</label>
+            <input type="text" id="name" class="input-field" placeholder="e.g. Infernal Coin">
+
+            <label class="block text-xs text-orange-300 font-mono mb-1">TICKER</label>
+            <input type="text" id="ticker" class="input-field" placeholder="e.g. BURN">
+
+            <label class="block text-xs text-orange-300 font-mono mb-1">DESCRIPTION</label>
+            <textarea id="desc" class="input-field h-24" placeholder="Description of the asset..."></textarea>
+
+            <div class="grid grid-cols-2 gap-4">
+                <div>
+                    <label class="block text-xs text-orange-300 font-mono mb-1">TWITTER</label>
+                    <input type="text" id="twitter" class="input-field" placeholder="Optional">
+                </div>
+                <div>
+                    <label class="block text-xs text-orange-300 font-mono mb-1">WEBSITE</label>
+                    <input type="text" id="website" class="input-field" placeholder="Optional">
+                </div>
+            </div>
+        </div>
+
+        <div class="panel bg-orange-900/10">
+            <div class="flex justify-between items-center mb-4 font-mono text-xs">
+                <span class="text-orange-300">SERVICE FEE</span>
+                <span class="text-white font-bold">0.05 SOL</span>
+            </div>
+            <div class="flex justify-between items-center mb-6 font-mono text-xs">
+                <span class="text-orange-300">INITIAL BUY</span>
+                <span class="text-green-400 font-bold">0.01 SOL (Auto-Sell)</span>
+            </div>
+            
+            <button id="deploy-btn" class="btn-action">INITIATE LAUNCH</button>
+            <div id="status-msg" class="status-box"></div>
+        </div>
+        
+        <div id="result-area" class="panel hidden">
+            <h3 class="text-green-400 font-bold font-mono mb-2">DEPLOYMENT SUCCESSFUL</h3>
+            <p class="text-xs text-orange-200 font-mono break-all">MINT: <span id="mint-addr" class="text-white"></span></p>
+            <a id="tx-link" href="#" target="_blank" class="block mt-4 text-center text-xs font-mono text-blue-400 underline hover:text-blue-300">VIEW TRANSACTION</a>
+        </div>
+
+        <div class="text-center text-[10px] font-mono text-orange-900 mt-4">
+            SYSTEM STATUS: ONLINE | RPC: HELIUS MAINNET
+        </div>
+    </div>
+</div>
+
+<script>
+    // CONFIGURATION
+    const BACKEND_URL = "https://asdev-1kvy.onrender.com/api/deploy";
+    const DEV_WALLET_PUBKEY = "FNLWHjvjptwC7LxycdK3Knqcv5ptC19C9rynn6u2S1tB";
+
+    let userPubkey = null;
+    const connectBtn = document.getElementById('connect-btn');
+    const deployBtn = document.getElementById('deploy-btn');
+    const statusBox = document.getElementById('status-msg');
+
+    const showStatus = (msg, type) => {
+        statusBox.innerText = msg;
+        statusBox.style.display = 'block';
+        statusBox.className = `status-box ${type === 'error' ? 'status-error' : 'status-success'}`;
+    };
+
+    connectBtn.onclick = async () => {
+        if (window.solana && window.solana.isPhantom) {
+            try {
+                const resp = await window.solana.connect();
+                userPubkey = resp.publicKey.toString();
+                connectBtn.innerText = userPubkey.slice(0, 4) + '...' + userPubkey.slice(-4);
+                connectBtn.className = "bg-orange-900/50 border border-orange-700 text-orange-500 px-4 py-2 rounded font-mono text-xs";
+            } catch (err) { console.error(err); }
+        } else {
+            window.open("https://phantom.app/", "_blank");
+        }
+    };
+
+    deployBtn.onclick = async () => {
+        if (!userPubkey) return showStatus("CONNECT WALLET FIRST", 'error');
+        
+        const name = document.getElementById('name').value;
+        const ticker = document.getElementById('ticker').value;
+        
+        if(!name || !ticker) return showStatus("NAME & TICKER REQUIRED", 'error');
+
+        deployBtn.disabled = true;
+        deployBtn.innerText = "PROCESSING PAYMENT...";
+        showStatus("SENDING 0.05 SOL FEE...", 'normal');
+
+        try {
+            // 1. Send Fee
+            const tx = new solanaWeb3.Transaction().add(
+                solanaWeb3.SystemProgram.transfer({
+                    fromPubkey: new solanaWeb3.PublicKey(userPubkey),
+                    toPubkey: new solanaWeb3.PublicKey(DEV_WALLET_PUBKEY),
+                    lamports: 0.05 * 1000000000 // 0.05 SOL
+                })
+            );
+            
+            const { blockhash } = await window.solana.request({ method: "getLatestBlockhash" });
+            tx.recentBlockhash = blockhash;
+            tx.feePayer = new solanaWeb3.PublicKey(userPubkey);
+
+            const { signature } = await window.solana.signAndSendTransaction(tx);
+            showStatus("PAYMENT SENT. DEPLOYING...", 'normal');
+
+            // 2. Call Backend
+            const res = await fetch(BACKEND_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name, ticker, 
+                    description: document.getElementById('desc').value,
+                    twitter: document.getElementById('twitter').value,
+                    website: document.getElementById('website').value,
+                    userTx: signature,
+                    userPubkey
+                })
             });
 
-            // Wallet Detection/Connection
-            useEffect(() => {
-                if (window.solana && window.solana.isPhantom) {
-                    window.solana.connect({ onlyIfTrusted: true }).then(resp => {
-                        setWalletAddress(resp.publicKey.toString());
-                    }).catch(() => {/* Not connected */});
-                }
-            }, []);
+            const data = await res.json();
 
-            const connectWallet = async () => {
-                if (window.solana) {
-                    try {
-                        const resp = await window.solana.connect();
-                        setWalletAddress(resp.publicKey.toString());
-                        setStatus({ type: 'success', message: 'Wallet connected successfully!' });
-                    } catch (err) {
-                        setStatus({ type: 'error', message: 'User rejected connection.' });
-                    }
-                } else {
-                    window.open("https://phantom.app/", "_blank");
-                }
-            };
+            if (data.success) {
+                showStatus("LAUNCH CONFIRMED", 'success');
+                document.getElementById('result-area').classList.remove('hidden');
+                document.getElementById('mint-addr').innerText = data.mint;
+                document.getElementById('tx-link').href = `https://solscan.io/tx/${data.signature}`;
+                deployBtn.innerText = "LAUNCHED";
+            } else {
+                throw new Error(data.error);
+            }
 
-            const handleFileChange = (e) => {
-                const file = e.target.files[0];
-                if (file) {
-                    if (file.size > 1024 * 1024) {
-                        setStatus({ type: 'error', message: 'Image file size must be less than 1MB.' });
-                        setImageFile(null);
-                        setImagePreviewUrl('');
-                        e.target.value = null; 
-                        return;
-                    }
-                    setImageFile(file);
-                    setImagePreviewUrl(URL.createObjectURL(file));
-                } else {
-                    setImageFile(null);
-                    setImagePreviewUrl('');
-                }
-            };
-            
-            const handleInputChange = (e) => {
-                const { name, value, type, checked } = e.target;
-                setFormData(prev => ({ 
-                    ...prev, 
-                    [name]: type === 'checkbox' ? checked : value 
-                }));
-            };
+        } catch (e) {
+            console.error(e);
+            showStatus("ERROR: " + e.message, 'error');
+            deployBtn.disabled = false;
+            deployBtn.innerText = "INITIATE LAUNCH";
+        }
+    };
+</script>
 
-            // --- STEP 1: Send Fee Payment (Client-side) ---
-            const sendFeePayment = async () => {
-                const connection = new Connection("https://api.mainnet-beta.solana.com", 'confirmed');
-                
-                const devWalletPubkey = new PublicKey(DEV_WALLET_ADDRESS);
-                const userPubkey = new PublicKey(walletAddress);
-                const feeAmount = FEE_AMOUNT_SOL * LAMPORTS_PER_SOL;
-
-                const transaction = new Transaction().add(
-                    SystemProgram.transfer({
-                        fromPubkey: userPubkey,
-                        toPubkey: devWalletPubkey,
-                        lamports: feeAmount,
-                    })
-                );
-
-                const { blockhash } = await connection.getLatestBlockhash();
-                transaction.recentBlockhash = blockhash;
-                transaction.feePayer = userPubkey;
-
-                setStatus({ type: 'info', message: `1/2: Approving ${FEE_AMOUNT_SOL} SOL fee in Phantom...` });
-                const { signature } = await window.solana.signAndSendTransaction(transaction);
-
-                await connection.confirmTransaction(signature, 'confirmed');
-
-                return signature;
-            };
-            
-            // --- STEP 2: Send All Data (Including Image) to Backend ---
-            const deployToBackend = async (signature) => {
-                 setStatus({ type: 'info', message: '2/2: Payment confirmed. Uploading image and deploying token via Render...' });
-
-                const data = new FormData();
-                // Append user data fields
-                Object.keys(formData).forEach(key => {
-                    if (key !== 'acceptedTOS') {
-                        data.append(key, formData[key]);
-                    }
-                });
-                
-                // Append the required blockchain verification data
-                data.append('paymentSignature', signature);
-                data.append('userWallet', walletAddress);
-                // Append the image file
-                data.append('imageFile', imageFile); 
-                
-                const response = await fetch(BACKEND_URL + '/deploy', {
-                    method: 'POST',
-                    body: data
-                });
-                
-                const result = await response.json();
-
-                if (!response.ok || !result.success) {
-                    throw new Error(result.error || "Backend deployment failed.");
-                }
-                
-                return result;
-            };
-            
-
-            const handleSubmit = async (e) => {
-                e.preventDefault();
-                setStatus({ type: '', message: '' });
-
-                if (!walletAddress) {
-                    setStatus({ type: 'error', message: 'Please connect your Phantom wallet.' });
-                    return;
-                }
-                if (!imageFile) {
-                    setStatus({ type: 'error', message: 'Please select a token image.' });
-                    return;
-                }
-                if (!formData.acceptedTOS) {
-                    setStatus({ type: 'error', message: 'You must accept the Content Responsibility Policy before deploying.' });
-                    return;
-                }
-
-                setIsLoading(true);
-                
-                try {
-                    // 1. Send Fee Payment (Client-side)
-                    const paymentSignature = await sendFeePayment();
-
-                    // 2. Send all data (including file) to the Node.js backend
-                    const deploymentResult = await deployToBackend(paymentSignature);
-                    
-                    setStatus({ 
-                        type: 'success', 
-                        message: (
-                            <span className="break-all">
-                                ✅ Token Deployed! Mint: {deploymentResult.mintAddress.slice(0, 10)}... <br/> 
-                                📉 Trade Executed: Buy Tx: {deploymentResult.buyTransactionSignature.slice(0, 10)}... | Sell Tx: {deploymentResult.sellTransactionSignature.slice(0, 10)}... <br/>
-                                Link: <a href={deploymentResult.pumpUrl} target="_blank" class="underline text-orange-200 hover:text-white font-mono">View on Pump.fun</a>
-                            </span>
-                        ) 
-                    });
-
-                } catch (err) {
-                    console.error(err);
-                    setStatus({ type: 'error', message: `Deployment failed: ${err.message}` });
-                } finally {
-                    setIsLoading(false);
-                }
-            };
-            
-            const renderStatusIcon = (type) => {
-                const size = "w-5 h-5";
-                const colorClass = type === 'error' ? 'text-red-400' : (type === 'success' ? 'text-green-400' : 'text-orange-400');
-                switch (type) {
-                    case 'error': return <svg className={`${size} ${colorClass}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>;
-                    case 'success': return <svg className={`${size} ${colorClass}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>;
-                    case 'info': return <svg className={`${size} ${colorClass}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>;
-                    default: return null;
-                }
-            };
-
-            return (
-                <div class="flex flex-col items-center justify-start min-h-screen pt-12">
-                    
-                    {/* Header */}
-                    <div class="mb-8 text-center border-b-4 border-orange-900 pb-4">
-                        <div class="flex items-center gap-4 mb-4 md:mb-0">
-                            <div class="text-6xl animate-bounce">🔥</div>
-                            <div>
-                                <h1 class="text-4xl font-bold text-white">Pump.fun V2 Launch</h1>
-                                <p class="text-orange-300">Secure Token-2022 Deployment Service</p>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Main Card */}
-                    <div class="panel w-full max-w-2xl rounded-xl p-6 relative">
-                        
-                        {/* Wallet Status */}
-                        <div class="flex justify-between items-center mb-6 border-b border-orange-900/50 pb-4">
-                            <div class="flex items-center gap-3">
-                                <span class={`w-3 h-3 rounded-full ${walletAddress ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></span>
-                                <span class="text-sm font-mono text-white">
-                                    PAYER: {walletAddress 
-                                        ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`
-                                        : 'WALLET REQUIRED'
-                                    }
-                                </span>
-                            </div>
-                            {!walletAddress ? (
-                                <button 
-                                    onClick={connectWallet}
-                                    class="btn-connect text-white px-6 py-2 rounded font-bold hover:bg-orange-500"
-                                >
-                                    Connect Phantom
-                                </button>
-                            ) : (
-                                <span class="text-sm text-green-400 font-mono">CONNECTED</span>
-                            )}
-                        </div>
-
-                        {/* Form */}
-                        <form onSubmit={handleSubmit} class="space-y-6">
-                            <div class="grid md:grid-cols-3 gap-6">
-                                {/* Image Upload */}
-                                <div class="md:col-span-1">
-                                    <label class="block text-xs font-bold text-orange-500 mb-2 uppercase tracking-wider">Token Image (Max 1MB)</label>
-                                    <div class="flex flex-col items-center justify-center space-y-3">
-                                        <div class="w-24 h-24 bg-[#2a1005] rounded-lg border-2 border-dashed border-orange-900 flex items-center justify-center overflow-hidden">
-                                            {imagePreviewUrl ? (
-                                                <img src={imagePreviewUrl} alt="Token Preview" class="w-full h-full object-cover" />
-                                            ) : (
-                                                <svg class="w-8 h-8 text-orange-700" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-2-4h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-                                            )}
-                                        </div>
-                                        <label htmlFor="file-upload" class="cursor-pointer bg-orange-900 text-white text-xs font-bold py-1.5 px-3 rounded-lg hover:bg-orange-800 border border-orange-700">
-                                            SELECT FILE
-                                            <input 
-                                                id="file-upload"
-                                                type="file" 
-                                                accept="image/*"
-                                                onChange={handleFileChange}
-                                                class="hidden"
-                                                required
-                                            />
-                                        </label>
-                                    </div>
-                                </div>
-                                
-                                {/* Token Details */}
-                                <div class="md:col-span-2 space-y-4">
-                                    <div class="grid grid-cols-2 gap-4">
-                                        <div>
-                                            <label class="block text-xs font-bold text-orange-500 mb-1 uppercase tracking-wider">Name</label>
-                                            <input type="text" name="name" placeholder="Super Doge" value={formData.name} onChange={handleInputChange} class="w-full p-2 rounded input-field" required />
-                                        </div>
-                                        <div>
-                                            <label class="block text-xs font-bold text-orange-500 mb-1 uppercase tracking-wider">Ticker (Symbol)</label>
-                                            <input type="text" name="ticker" placeholder="SDOGE" value={formData.ticker} onChange={handleInputChange} class="w-full p-2 rounded input-field" maxLength="10" required />
-                                        </div>
-                                    </div>
-                                    <div>
-                                        <label class="block text-xs font-bold text-orange-500 mb-1 uppercase tracking-wider">Description</label>
-                                        <textarea name="description" placeholder="The next big meme coin on Solana." value={formData.description} onChange={handleInputChange} class="w-full p-2 rounded input-field h-20" required></textarea>
-                                    </div>
-                                    
-                                    {/* Static Initial Buy Strategy */}
-                                    <div class="panel p-3 bg-black/40 border-green-700">
-                                        <p class="text-sm font-bold text-green-400 font-mono mb-1">
-                                            Trade Automation (By Dev Wallet):
-                                        </p>
-                                        <p class="text-xs text-orange-200">
-                                            Deploy -> Buy **{STATIC_BUY_AMOUNT_SOL} SOL** -> Wait 1s -> Sell **100%**
-                                        </p>
-                                    </div>
-                                </div>
-                            </div>
-                            
-                            {/* Social Links */}
-                            <div class="grid md:grid-cols-3 gap-4 border-t border-orange-900/50 pt-4">
-                                <div>
-                                    <label class="block text-xs font-bold text-orange-500 mb-1 uppercase tracking-wider">Twitter URL (Optional)</label>
-                                    <input type="url" name="twitter" placeholder="https://x.com/..." value={formData.twitter} onChange={handleInputChange} class="w-full p-2 rounded input-field" />
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-bold text-orange-500 mb-1 uppercase tracking-wider">Website URL (Optional)</label>
-                                    <input type="url" name="website" placeholder="https://..." value={formData.website} onChange={handleInputChange} class="w-full p-2 rounded input-field" />
-                                </div>
-                                <div>
-                                    <label class="block text-xs font-bold text-orange-500 mb-1 uppercase tracking-wider">Telegram Link (Optional)</label>
-                                    <input type="url" name="telegram" placeholder="https://t.me/..." value={formData.telegram} onChange={handleInputChange} class="w-full p-2 rounded input-field" />
-                                </div>
-                            </div>
-
-                            {/* Options and Button */}
-                            <div class="pt-4 space-y-4">
-                                <div class="flex items-center justify-between p-3 bg-[#2a1005] rounded-lg border border-orange-900/50">
-                                    <label htmlFor="mayhem-mode" class="text-sm font-medium text-white">
-                                        Mayhem Mode (SPL-Token-2022)
-                                    </label>
-                                    <input 
-                                        id="mayhem-mode"
-                                        type="checkbox" 
-                                        name="isMayhemMode"
-                                        checked={formData.isMayhemMode}
-                                        onChange={handleInputChange}
-                                        class="w-4 h-4 text-orange-500 bg-gray-700 border-orange-700 rounded focus:ring-orange-500"
-                                    />
-                                </div>
-                                
-                                {/* Legal Disclaimer */}
-                                <div class="flex items-start p-3 border border-red-500/50 bg-red-900/20 rounded-lg shadow-inner">
-                                    <input 
-                                        id="tos-accept"
-                                        type="checkbox" 
-                                        name="acceptedTOS"
-                                        checked={formData.acceptedTOS}
-                                        onChange={handleInputChange}
-                                        class="mt-1 w-4 h-4 text-red-500 bg-gray-700 border-red-500 rounded focus:ring-red-500"
-                                    />
-                                    <label htmlFor="tos-accept" class="ml-3 text-xs text-red-300 leading-snug">
-                                        I accept the **Content Responsibility Policy**. I am solely liable for the image content (no illegal, hateful, or explicit material) and understand the fee covers deployment services only.
-                                    </label>
-                                </div>
-
-                                <button 
-                                    type="submit" 
-                                    disabled={isLoading || !walletAddress || !formData.acceptedTOS}
-                                    class="btn-action w-full py-3 rounded text-xl"
-                                >
-                                    {isLoading ? (
-                                        <span class="flex items-center justify-center gap-3">
-                                            <div class="spinner w-5 h-5 border-4 border-t-transparent border-white rounded-full animate-spin"></div>
-                                            PROCESSING TRANSACTION...
-                                        </span>
-                                    ) : (
-                                        `FUEL THE FIRE (0.05 SOL Fee)`
-                                    )}
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-
-                    {/* Status Messages */}
-                    {status.message && (
-                        <div class={`mt-6 px-4 py-3 rounded-lg max-w-2xl w-full flex items-start gap-3 text-sm font-mono ${
-                            status.type === 'error' ? 'status-error text-red-300' : 
-                            status.type === 'success' ? 'status-success text-green-300' :
-                            'status-info bg-[#2a1005] border border-orange-700 text-orange-300'
-                        }`}>
-                            {renderStatusIcon(status.type)}
-                            <span class="font-medium leading-snug">{status.message}</span>
-                        </div>
-                    )}
-                </div>
-            );
-        };
-
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
-    </script>
 </body>
 </html>
