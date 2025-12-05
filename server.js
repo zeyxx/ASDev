@@ -1,0 +1,487 @@
+require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const multer = require('multer');
+const { 
+    Connection, 
+    Keypair, 
+    PublicKey, 
+    SystemProgram, 
+    LAMPORTS_PER_SOL, 
+    Transaction, 
+    sendAndConfirmTransaction 
+} = require('@solana/web3.js');
+const { Program, AnchorProvider, Wallet } = require('@coral-xyz/anchor');
+const { getAssociatedTokenAddress } = require('@solana/spl-token');
+const bs58 = require('bs58');
+const axios = require('axios');
+const FormData = require('form-data');
+const { Readable } = require('stream');
+
+// --- CONFIGURATION & PROGRAM IDS ---
+const PORT = process.env.PORT || 3000;
+const DEV_WALLET_ADDRESS = "FNLWHjvjptwC7LxycdK3Knqcv5ptC19C9rynn6u2S1tB"; // User specified Dev Pubkey
+const FEE_AMOUNT_SOL = 0.05;
+
+// Program IDs (Confirmed from documentation)
+const PUMP_PROGRAM_ID = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+const MAYHEM_PROGRAM_ID = new PublicKey("MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e");
+const SYSTEM_PROGRAM_ID = SystemProgram.programId;
+const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+
+// Required PDAs (Confirmed from documentation)
+const GLOBAL_PARAMS_PUBKEY = new PublicKey("13ec7XdrjF3h3YcqBTFDSReRcUFwbCnJaAQspM4j6DDJ");
+const SOL_VAULT_PUBKEY = new PublicKey("BwWK17cbHxwWBKZkUYvzxLcNQ1YVyaFezduWbtm2de6s");
+
+// RPC Endpoint: Using Helius if API key is set
+const RPC_ENDPOINT = process.env.HELIUS_API_KEY 
+    ? `https://api.helius.xyz/v1/jsonrpc?api-key=${process.env.HELIUS_API_KEY}` 
+    : "https://api.mainnet-beta.solana.com";
+
+
+// In-memory store for processed signatures to prevent replay
+const processedSignatures = new Set();
+
+const app = express();
+app.use(cors());
+app.use(express.json()); 
+
+// Configure Multer for file upload. We use memory storage to avoid writing to disk.
+const upload = multer({ 
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 1024 * 1024 * 1 } // Limit file size to 1MB
+});
+
+// --- Dev Wallet & Solana Setup ---
+let walletKeyPair;
+try {
+    walletKeyPair = Keypair.fromSecretKey(bs58.decode(process.env.PRIVATE_KEY));
+} catch (e) {
+    console.error("CRITICAL ERROR: Failed to load DEV_WALLET_PRIVATE_KEY.");
+    process.exit(1); 
+}
+const wallet = new Wallet(walletKeyPair);
+const connection = new Connection(RPC_ENDPOINT, "confirmed");
+const provider = new AnchorProvider(connection, wallet, { commitment: "confirmed" });
+const creatorPubkey = wallet.publicKey;
+
+// --- ANCHOR IDL (Unchanged) ---
+const PUMP_IDL = {
+  "version": "0.1.0",
+  "name": "pump",
+  "instructions": [
+    {
+      "name": "createV2",
+      "accounts": [
+        { "name": "mint", "isMut": true, "isSigner": true },
+        { "name": "mintAuthority", "isMut": false, "isSigner": false },
+        { "name": "bondingCurve", "isMut": true, "isSigner": false },
+        { "name": "associatedBondingCurve", "isMut": true, "isSigner": false },
+        { "name": "global", "isMut": false, "isSigner": false },
+        { "name": "user", "isMut": true, "isSigner": true },
+        { "name": "systemProgram", "isMut": false, "isSigner": false },
+        { "name": "tokenProgram", "isMut": false, "isSigner": false }, 
+        { "name": "associatedTokenProgram", "isMut": false, "isSigner": false },
+        { "name": "mayhemProgramId", "isMut": true, "isSigner": false },
+        { "name": "globalParams", "isMut": false, "isSigner": false },
+        { "name": "solVault", "isMut": true, "isSigner": false },
+        { "name": "mayhemState", "isMut": true, "isSigner": false },
+        { "name": "mayhemTokenVault", "isMut": true, "isSigner": false },
+        { "name": "eventAuthority", "isMut": false, "isSigner": false },
+        { "name": "program", "isMut": false, "isSigner": false }
+      ],
+      "args": [
+        { "name": "name", "type": "string" },
+        { "name": "symbol", "type": "string" },
+        { "name": "uri", "type": "string" },
+        { "name": "creator", "type": "pubkey" }, 
+        { "name": "isMayhemMode", "type": "bool" }
+      ]
+    },
+    {
+        "name": "collectCreatorFee",
+        "accounts": [
+            { "name": "creator", "isMut": true, "isSigner": false },
+            { "name": "creatorVault", "isMut": true, "isSigner": false },
+            { "name": "systemProgram", "isMut": false, "isSigner": false },
+            { "name": "eventAuthority", "isMut": false, "isSigner": false },
+            { "name": "program", "isMut": false, "isSigner": false }
+        ],
+        "args": []
+    }
+  ]
+};
+
+const program = new Program(PUMP_IDL, PUMP_PROGRAM_ID, provider);
+
+
+// --- CONTENT MODERATION LAYER (Using Gemini Vision) ---
+async function checkContentSafety(fileBuffer, mimeType) {
+    console.log(`[Moderation] Scanning incoming file (${(fileBuffer.length / 1024).toFixed(2)} KB) using Gemini...`);
+    
+    const base64ImageData = fileBuffer.toString('base64');
+    const apiKey = ""; 
+
+    // **UPDATED SYSTEM PROMPT** to strictly focus on ILLEGAL content categories.
+    const systemPrompt = "You are a content safety expert. Your sole task is to check the provided image only for content that is strictly and universally illegal. This includes, but is not limited to: Child Sexual Abuse Material (CSAM), non-consensual intimate imagery, content explicitly promoting illegal acts (such as specific instructions for major violence or bomb-making), or real-world symbols of hate/terrorism. Respond ONLY with the single word 'SAFE' if the image does not contain strictly illegal content. Respond ONLY with the single word 'UNSAFE' if the image appears to depict or promote illegal content as defined above.";
+    const userQuery = "Analyze this image for strictly illegal and universally prohibited content compliance.";
+
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+    const payload = {
+        contents: [
+            {
+                role: "user",
+                parts: [
+                    { text: userQuery },
+                    {
+                        inlineData: {
+                            mimeType: mimeType,
+                            data: base64ImageData
+                        }
+                    }
+                ]
+            }
+        ],
+        systemInstruction: {
+            parts: [{ text: systemPrompt }]
+        },
+        config: {
+            temperature: 0.1 
+        }
+    };
+    
+    const MAX_RETRIES = 3;
+    let lastResult = null;
+
+    for (let i = 0; i < MAX_RETRIES; i++) {
+        try {
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            lastResult = await response.json();
+
+            if (!response.ok) {
+                if (response.status >= 500 && i < MAX_RETRIES - 1) {
+                    await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+                    continue; 
+                }
+                throw new Error(`API error: ${lastResult.error?.message || response.statusText}`);
+            }
+
+            const text = lastResult.candidates?.[0]?.content?.parts?.[0]?.text?.trim().toUpperCase();
+            
+            if (!text || text.includes('UNSAFE')) {
+                // Return a clear error message that indicates the nature of the rejection
+                throw new Error("Content failed moderation check. Strictly illegal content detected based on policy review.");
+            }
+            
+            if (text.includes('SAFE')) {
+                console.log("[Moderation] Image classified as SAFE.");
+                return true;
+            }
+
+            throw new Error(`Moderation API returned an ambiguous response: ${text}`);
+
+        } catch (error) {
+            if (error.message.includes("illegal content detected")) {
+                 throw error; 
+            }
+            if (i === MAX_RETRIES - 1) {
+                console.error("Gemini API call failed after max retries.");
+                throw new Error("Temporary moderation service error. Please try again.");
+            }
+            console.warn(`Retry attempt ${i + 1} failed: ${error.message}`);
+        }
+    }
+
+    throw new Error("Moderation service failed to return a valid classification.");
+}
+
+
+// --- IPFS HELPERS (Unchanged functionality) ---
+
+async function uploadFileToPinata(file, name) {
+    if (!process.env.PINATA_JWT) {
+        throw new Error("PINATA_JWT environment variable is missing.");
+    }
+    
+    const url = `https://api.pinata.cloud/pinning/pinFileToIPFS`;
+    const data = new FormData();
+
+    const fileStream = new Readable();
+    fileStream.push(file.buffer);
+    fileStream.push(null);
+    data.append('file', fileStream, { filename: name || file.originalname });
+
+    const pinataMetadata = JSON.stringify({ name: `${name} Image` });
+    data.append('pinataMetadata', pinataMetadata);
+
+    try {
+        const response = await axios.post(url, data, {
+            maxBodyLength: 'Infinity',
+            headers: {
+                ...data.getHeaders(),
+                'Authorization': `Bearer ${process.env.PINATA_JWT}`,
+            }
+        });
+        const ipfsHash = response.data.IpfsHash;
+        console.log("Image successfully uploaded to Pinata:", ipfsHash);
+        return `https://gateway.pinata.cloud/ipfs/${ipfsHash}`;
+    } catch (error) {
+        console.error("IPFS Image Upload Error:", error.response?.data || error.message);
+        throw new Error("Failed to upload image to Pinata. Check Pinata JWT and file size.");
+    }
+}
+
+async function uploadMetadataToIPFS(metadata, imageUrl) {
+    if (!process.env.PINATA_JWT) {
+        throw new Error("PINATA_JWT environment variable is missing.");
+    }
+
+    const url = `https://api.pinata.cloud/pinning/pinJSONToIPFS`;
+    
+    const jsonBody = {
+        name: metadata.name,
+        symbol: metadata.ticker,
+        description: metadata.description,
+        image: imageUrl, 
+        showName: true,
+        createdOn: "https://pump.fun",
+        twitter: metadata.twitter || undefined,
+        website: metadata.website || undefined,
+        telegram: metadata.telegram || undefined,
+        attributes: [
+            { trait_type: "Creator", value: DEV_WALLET_ADDRESS },
+            { trait_type: "Mode", value: metadata.isMayhemMode === 'true' ? "Mayhem V2" : "Standard V2" }
+        ].filter(attr => attr.value !== undefined) 
+    };
+
+    try {
+        const response = await axios.post(url, jsonBody, {
+            headers: {
+                'Authorization': `Bearer ${process.env.PINATA_JWT}`,
+                'Content-Type': 'application/json'
+            }
+        });
+        const ipfsHash = response.data.IpfsHash;
+        console.log("Metadata JSON uploaded to Pinata:", ipfsHash);
+        return `https://gateway.pinata.cloud/ipfs/${ipfsHash}`;
+    } catch (error) {
+        console.error("IPFS Metadata Upload Error:", error.response?.data || error.message);
+        throw new Error("Failed to upload metadata to Pinata.");
+    }
+}
+
+
+// --- HELPER: Verify User Payment (Unchanged) ---
+async function verifyPayment(signature) {
+    if (processedSignatures.has(signature)) {
+        throw new Error("Transaction already processed (replay detected)");
+    }
+
+    const tx = await connection.getParsedTransaction(signature, { commitment: 'confirmed' });
+    
+    if (!tx) throw new Error("Payment transaction not found or not confirmed yet");
+    if (tx.meta.err) throw new Error("Payment transaction failed on-chain");
+
+    const myAddress = walletKeyPair.publicKey.toString();
+    const accountIndex = tx.transaction.message.accountKeys.findIndex(
+        account => account.pubkey.toString() === myAddress
+    );
+    
+    if (accountIndex === -1) throw new Error("Dev wallet not found in the payment transaction accounts.");
+
+    const preBalance = tx.meta.preBalances[accountIndex];
+    const postBalance = tx.meta.postBalances[accountIndex];
+    const amountReceived = (postBalance - preBalance) / LAMPORTS_PER_SOL;
+
+    if (amountReceived < FEE_AMOUNT_SOL * 0.99) { 
+        throw new Error(`Insufficient payment. Received: ${amountReceived.toFixed(4)} SOL, Expected: ${FEE_AMOUNT_SOL} SOL.`);
+    }
+
+    processedSignatures.add(signature);
+    return true;
+}
+
+// --- CORE LOGIC: COLLECT FEES LOOP (Unchanged) ---
+async function collectCreatorFees() {
+    const creatorPubkey = wallet.publicKey;
+
+    try {
+        const [creatorVault] = PublicKey.findProgramAddressSync(
+            [Buffer.from("creator-vault"), creatorPubkey.toBuffer()],
+            PUMP_PROGRAM_ID
+        );
+
+        const balance = await connection.getBalance(creatorVault);
+
+        if (balance < 1000) { 
+            return;
+        }
+
+        const solAmount = balance / LAMPORTS_PER_SOL;
+        
+        const [eventAuthority] = PublicKey.findProgramAddressSync(
+            [Buffer.from("__event_authority")],
+            PUMP_PROGRAM_ID
+        );
+        
+        const ix = await program.methods
+            .collectCreatorFee()
+            .accounts({
+                creator: creatorPubkey, 
+                creatorVault: creatorVault,
+                systemProgram: SYSTEM_PROGRAM_ID,
+                eventAuthority: eventAuthority,
+                program: PUMP_PROGRAM_ID,
+            })
+            .instruction();
+
+        const transaction = new Transaction().add(ix);
+        transaction.feePayer = creatorPubkey;
+        
+        const { blockhash } = await connection.getLatestBlockhash();
+        transaction.recentBlockhash = blockhash;
+        
+        const sig = await sendAndConfirmTransaction(connection, transaction, [walletKeyPair], { 
+            commitment: 'confirmed',
+            skipPreflight: true 
+        });
+
+        console.log(`[Fee Collector] ✅ Collected ${solAmount.toFixed(6)} SOL. Tx: ${sig.slice(0, 10)}...`);
+
+    } catch (error) {
+        console.error(`[Fee Collector] 🚨 Error during fee collection: ${error.message}`);
+    }
+}
+
+// Start the fee collection loop (1 minute interval)
+const FEE_COLLECTION_INTERVAL = 60 * 1000; // 60 seconds
+setInterval(collectCreatorFees, FEE_COLLECTION_INTERVAL);
+collectCreatorFees(); // Run once immediately on startup
+
+// --- MAIN ENDPOINT: Deploy Token ---
+app.post('/deploy', upload.single('imageFile'), async (req, res) => {
+    try {
+        // --- 0. BASIC VALIDATION & CONTENT CHECK ---
+        if (!req.file || req.file.fieldname !== 'imageFile') {
+            return res.status(400).json({ success: false, error: 'Image file upload failed or missing. Did you select a file?' });
+        }
+        
+        const { 
+            name, 
+            ticker, 
+            paymentSignature, 
+            isMayhemMode 
+        } = req.body;
+        
+        // 🚨 CRITICAL RISK MITIGATION STEP: Check content safety before proceeding!
+        await checkContentSafety(req.file.buffer, req.file.mimetype);
+
+        // --- 1. VERIFY PAYMENT ---
+        await verifyPayment(paymentSignature);
+
+        // --- 2. IPFS UPLOAD FLOW (Backend) ---
+        
+        // 2a. Upload Image File (Buffer) to Pinata
+        const imageUrl = await uploadFileToPinata(req.file, ticker);
+
+        // 2b. Upload Metadata JSON pointing to the image URL
+        const metadataUri = await uploadMetadataToIPFS(req.body, imageUrl);
+
+        // --- 3. GENERATE PDAs & EXECUTE DEPLOYMENT ---
+        const mintKeypair = Keypair.generate();
+        
+        const [mintAuthority] = PublicKey.findProgramAddressSync(
+            [Buffer.from("mint-authority")],
+            PUMP_PROGRAM_ID
+        );
+
+        const [bondingCurve] = PublicKey.findProgramAddressSync(
+            [Buffer.from("bonding-curve"), mintKeypair.publicKey.toBuffer()],
+            PUMP_PROGRAM_ID
+        );
+
+        const associatedBondingCurve = await getAssociatedTokenAddress(
+            mintKeypair.publicKey,
+            bondingCurve,
+            true, 
+            TOKEN_2022_PROGRAM_ID
+        );
+
+        const [globalPDA] = PublicKey.findProgramAddressSync(
+            [Buffer.from("global")],
+            PUMP_PROGRAM_ID
+        );
+
+        const [mayhemState] = PublicKey.findProgramAddressSync(
+            [Buffer.from("mayhem-state"), mintKeypair.publicKey.toBuffer()],
+            MAYHEM_PROGRAM_ID
+        );
+        
+        const mayhemTokenVault = await getAssociatedTokenAddress(
+            mintKeypair.publicKey,
+            SOL_VAULT_PUBKEY,
+            true,
+            TOKEN_2022_PROGRAM_ID
+        );
+
+        const [eventAuthority] = PublicKey.findProgramAddressSync(
+            [Buffer.from("__event_authority")],
+            PUMP_PROGRAM_ID
+        );
+        
+        const isMayhem = isMayhemMode === 'true';
+
+        // Execute create_v2 Transaction
+        console.log("[Deployment] Sending createV2 transaction...");
+        
+        const tx = await program.methods
+            .createV2(name, ticker, metadataUri, creatorPubkey, isMayhem) 
+            .accounts({
+                mint: mintKeypair.publicKey,
+                mintAuthority: mintAuthority,
+                bondingCurve: bondingCurve,
+                associatedBondingCurve: associatedBondingCurve,
+                global: globalPDA,
+                user: creatorPubkey, // Dev wallet pays gas and serves as payer
+                systemProgram: SYSTEM_PROGRAM_ID,
+                tokenProgram: TOKEN_2022_PROGRAM_ID, 
+                associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
+                mayhemProgramId: MAYHEM_PROGRAM_ID,
+                globalParams: GLOBAL_PARAMS_PUBKEY,
+                solVault: SOL_VAULT_PUBKEY,
+                mayhemState: mayhemState,
+                mayhemTokenVault: mayhemTokenVault,
+                eventAuthority: eventAuthority,
+                program: PUMP_PROGRAM_ID,
+            })
+            .signers([mintKeypair, walletKeyPair]) 
+            .rpc();
+
+        console.log("[Deployment] Token Deployed! Signature:", tx);
+
+        res.json({
+            success: true,
+            mintAddress: mintKeypair.publicKey.toString(),
+            transactionSignature: tx,
+            pumpUrl: `https://pump.fun/${mintKeypair.publicKey.toString()}`
+        });
+
+    } catch (error) {
+        console.error("Deployment Failed:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message 
+        });
+    }
+});
+
+app.listen(PORT, () => {
+    console.log(`Pump.fun Backend Service running on port ${PORT}. RPC: ${RPC_ENDPOINT.slice(0, 20)}...`);
+});
