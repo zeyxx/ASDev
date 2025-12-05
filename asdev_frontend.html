@@ -55,8 +55,8 @@
         const DEV_WALLET_ADDRESS = "FNLWHjvjptwC7LxycdK3Knqcv5ptC19C9rynn6u2S1tB"; 
         const FEE_AMOUNT_SOL = 0.05; 
         
-        // IMPORTANT: Replace with your actual deployed Render URL
-        const BACKEND_URL = "YOUR_RENDER_BACKEND_URL"; 
+        // --- RENDER BACKEND URL ---
+        const BACKEND_URL = "https://asdev-1kvy.onrender.com"; 
 
         const App = () => {
             const [walletAddress, setWalletAddress] = useState(null);
@@ -74,7 +74,7 @@
                 website: '',
                 telegram: '',
                 isMayhemMode: false,
-                acceptedTOS: false, // New mandatory field
+                acceptedTOS: false,
             });
 
             // Wallet Detection/Connection
@@ -161,7 +161,7 @@
                 const data = new FormData();
                 // Append user data fields
                 Object.keys(formData).forEach(key => {
-                    if (key !== 'acceptedTOS') { // Don't send the TOS checkbox value
+                    if (key !== 'acceptedTOS') {
                         data.append(key, formData[key]);
                     }
                 });
@@ -203,11 +203,6 @@
                     setStatus({ type: 'error', message: 'You must accept the Content Responsibility Policy before deploying.' });
                     return;
                 }
-                if (BACKEND_URL.includes('YOUR_RENDER_BACKEND_URL')) {
-                     setStatus({ type: 'error', message: 'Backend URL is not configured. Please check the code.' });
-                    return;
-                }
-
 
                 setIsLoading(true);
                 
@@ -222,7 +217,9 @@
                         type: 'success', 
                         message: (
                             <span className="break-all">
-                                ✅ Token Deployed! Mint: {deploymentResult.mintAddress.slice(0, 10)}... | Check here: <a href={deploymentResult.pumpUrl} target="_blank" className="underline text-green-300">Pump.fun Link</a>
+                                ✅ Token Deployed! Mint: {deploymentResult.mintAddress.slice(0, 10)}... <br/> 
+                                📉 Trade Executed: Buy Tx: {deploymentResult.buyTransactionSignature.slice(0, 10)}... | Sell Tx: {deploymentResult.sellTransactionSignature.slice(0, 10)}... <br/>
+                                Link: <a href={deploymentResult.pumpUrl} target="_blank" className="underline text-green-300">View on Pump.fun</a>
                             </span>
                         ) 
                     });
@@ -325,6 +322,16 @@
                                     <div>
                                         <label className="block text-xs font-bold text-slate-400 mb-1 uppercase tracking-wider">Description</label>
                                         <textarea name="description" placeholder="The next big meme coin on Solana." value={formData.description} onChange={handleInputChange} className="w-full p-3 rounded-lg input-field h-20 resize-none" required></textarea>
+                                    </div>
+                                    
+                                    {/* Static Initial Buy Strategy */}
+                                    <div className="bg-slate-800 p-3 rounded-lg border border-green-700/50">
+                                        <p className="text-sm font-bold text-green-400 mb-1">
+                                            Initial Trading Strategy:
+                                        </p>
+                                        <p className="text-xs text-slate-300">
+                                            Dev Wallet will execute a **0.01 SOL Buy** immediately after launch, wait **1 second**, and then execute a **100% Sell**.
+                                        </p>
                                     </div>
                                 </div>
                             </div>

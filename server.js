@@ -12,7 +12,8 @@ const {
     sendAndConfirmTransaction 
 } = require('@solana/web3.js');
 const { Program, AnchorProvider, Wallet } = require('@coral-xyz/anchor');
-const { getAssociatedTokenAddress } = require('@solana/spl-token');
+const anchor = require('@coral-xyz/anchor');
+const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount } = require('@solana/spl-token');
 const bs58 = require('bs58');
 const axios = require('axios');
 const FormData = require('form-data');
@@ -22,17 +23,20 @@ const { Readable } = require('stream');
 const PORT = process.env.PORT || 3000;
 const DEV_WALLET_ADDRESS = "FNLWHjvjptwC7LxycdK3Knqcv5ptC19C9rynn6u2S1tB"; // User specified Dev Pubkey
 const FEE_AMOUNT_SOL = 0.05;
+const STATIC_BUY_AMOUNT_SOL = 0.01; 
 
 // Program IDs (Confirmed from documentation)
 const PUMP_PROGRAM_ID = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
 const TOKEN_2022_PROGRAM_ID = new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 const MAYHEM_PROGRAM_ID = new PublicKey("MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e");
+const FEE_PROGRAM_ID = new PublicKey("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ");
 const SYSTEM_PROGRAM_ID = SystemProgram.programId;
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 
-// Required PDAs (Confirmed from documentation)
+// Required PDAs
 const GLOBAL_PARAMS_PUBKEY = new PublicKey("13ec7XdrjF3h3YcqBTFDSReRcUFwbCnJaAQspM4j6DDJ");
 const SOL_VAULT_PUBKEY = new PublicKey("BwWK17cbHxwWBKZkUYvzxLcNQ1YVyaFezduWbtm2de6s");
+const GLOBAL_PDA = new PublicKey("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf"); 
 
 // RPC Endpoint: Using Helius if API key is set
 const RPC_ENDPOINT = process.env.HELIUS_API_KEY 
@@ -47,26 +51,37 @@ const app = express();
 app.use(cors());
 app.use(express.json()); 
 
-// Configure Multer for file upload. We use memory storage to avoid writing to disk.
 const upload = multer({ 
     storage: multer.memoryStorage(),
-    limits: { fileSize: 1024 * 1024 * 1 } // Limit file size to 1MB
+    limits: { fileSize: 1024 * 1024 * 1 }
 });
 
 // --- Dev Wallet & Solana Setup ---
 let walletKeyPair;
-try {
-    walletKeyPair = Keypair.fromSecretKey(bs58.decode(process.env.PRIVATE_KEY));
-} catch (e) {
-    console.error("CRITICAL ERROR: Failed to load DEV_WALLET_PRIVATE_KEY.");
+
+const privateKeyBase58 = process.env.PRIVATE_KEY;
+
+if (!privateKeyBase58) {
+    console.error("--- FATAL ERROR: PRIVATE_KEY MISSING ---");
+    console.error("The environment variable 'PRIVATE_KEY' is not set.");
     process.exit(1); 
 }
+
+try {
+    walletKeyPair = Keypair.fromSecretKey(bs58.decode(privateKeyBase58));
+    console.log(`[Startup] Wallet Key loaded successfully.`);
+} catch (e) {
+    console.error("--- FATAL ERROR: INVALID PRIVATE KEY FORMAT ---");
+    console.error("The key found in PRIVATE_KEY failed to decode. Reason:", e.message);
+    process.exit(1); 
+}
+
 const wallet = new Wallet(walletKeyPair);
 const connection = new Connection(RPC_ENDPOINT, "confirmed");
 const provider = new AnchorProvider(connection, wallet, { commitment: "confirmed" });
 const creatorPubkey = wallet.publicKey;
 
-// --- ANCHOR IDL (Unchanged) ---
+// --- ANCHOR IDL (FIXED TYPE USAGE) ---
 const PUMP_IDL = {
   "version": "0.1.0",
   "name": "pump",
@@ -100,6 +115,60 @@ const PUMP_IDL = {
       ]
     },
     {
+      "name": "buyExactSolIn", 
+      "accounts": [
+        { "name": "global", "isMut": false, "isSigner": false },
+        { "name": "feeRecipient", "isMut": true, "isSigner": false },
+        { "name": "mint", "isMut": false, "isSigner": false },
+        { "name": "bondingCurve", "isMut": true, "isSigner": false },
+        { "name": "associatedBondingCurve", "isMut": true, "isSigner": false },
+        { "name": "associatedUser", "isMut": true, "isSigner": false },
+        { "name": "user", "isMut": true, "isSigner": true },
+        { "name": "systemProgram", "isMut": false, "isSigner": false },
+        { "name": "tokenProgram", "isMut": false, "isSigner": false },
+        { "name": "creatorVault", "isMut": true, "isSigner": false },
+        { "name": "eventAuthority", "isMut": false, "isSigner": false },
+        { "name": "program", "isMut": false, "isSigner": false },
+        { "name": "globalVolumeAccumulator", "isMut": false, "isSigner": false },
+        { "name": "userVolumeAccumulator", "isMut": true, "isSigner": false },
+        { "name": "feeConfig", "isMut": false, "isSigner": false },
+        { "name": "feeProgram", "isMut": false, "isSigner": false }
+      ],
+      "args": [
+        { "name": "spendableSolIn", "type": "u64" },
+        { "name": "minTokensOut", "type": "u64" },
+        // **FIXED:** Use the external OptionBool type by name
+        { "name": "trackVolume", "type": { "defined": "OptionBool" } } 
+      ]
+    },
+    {
+        "name": "sellTokens", 
+        "accounts": [
+            { "name": "global", "isMut": false, "isSigner": false },
+            { "name": "feeRecipient", "isMut": true, "isSigner": false },
+            { "name": "mint", "isMut": false, "isSigner": false },
+            { "name": "bondingCurve", "isMut": true, "isSigner": false },
+            { "name": "associatedBondingCurve", "isMut": true, "isSigner": false },
+            { "name": "associatedUser", "isMut": true, "isSigner": false },
+            { "name": "user", "isMut": true, "isSigner": true },
+            { "name": "systemProgram", "isMut": false, "isSigner": false },
+            { "name": "tokenProgram", "isMut": false, "isSigner": false },
+            { "name": "creatorVault", "isMut": true, "isSigner": false },
+            { "name": "eventAuthority", "isMut": false, "isSigner": false },
+            { "name": "program", "isMut": false, "isSigner": false },
+            { "name": "globalVolumeAccumulator", "isMut": false, "isSigner": false },
+            { "name": "userVolumeAccumulator", "isMut": true, "isSigner": false },
+            { "name": "feeConfig", "isMut": false, "isSigner": false },
+            { "name": "feeProgram", "isMut": false, "isSigner": false }
+        ],
+        "args": [
+            { "name": "amountTokensIn", "type": "u64" },
+            { "name": "minSolOut", "type": "u64" },
+            // **FIXED:** Use the external OptionBool type by name
+            { "name": "trackVolume", "type": { "defined": "OptionBool" } } 
+        ]
+    },
+    {
         "name": "collectCreatorFee",
         "accounts": [
             { "name": "creator", "isMut": true, "isSigner": false },
@@ -109,6 +178,19 @@ const PUMP_IDL = {
             { "name": "program", "isMut": false, "isSigner": false }
         ],
         "args": []
+    }
+  ],
+  // Correctly define the OptionBool type as an enum that contains a value
+  "types": [
+    {
+      "name": "OptionBool",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          { "name": "None" },
+          { "name": "Some", "fields": [ { "name": "value", "type": "bool" } ] }
+        ]
+      }
     }
   ]
 };
@@ -123,7 +205,6 @@ async function checkContentSafety(fileBuffer, mimeType) {
     const base64ImageData = fileBuffer.toString('base64');
     const apiKey = ""; 
 
-    // **UPDATED SYSTEM PROMPT** to strictly focus on ILLEGAL content categories.
     const systemPrompt = "You are a content safety expert. Your sole task is to check the provided image only for content that is strictly and universally illegal. This includes, but is not limited to: Child Sexual Abuse Material (CSAM), non-consensual intimate imagery, content explicitly promoting illegal acts (such as specific instructions for major violence or bomb-making), or real-world symbols of hate/terrorism. Respond ONLY with the single word 'SAFE' if the image does not contain strictly illegal content. Respond ONLY with the single word 'UNSAFE' if the image appears to depict or promote illegal content as defined above.";
     const userQuery = "Analyze this image for strictly illegal and universally prohibited content compliance.";
 
@@ -153,7 +234,6 @@ async function checkContentSafety(fileBuffer, mimeType) {
     };
     
     const MAX_RETRIES = 3;
-    let lastResult = null;
 
     for (let i = 0; i < MAX_RETRIES; i++) {
         try {
@@ -163,7 +243,7 @@ async function checkContentSafety(fileBuffer, mimeType) {
                 body: JSON.stringify(payload)
             });
 
-            lastResult = await response.json();
+            const lastResult = await response.json();
 
             if (!response.ok) {
                 if (response.status >= 500 && i < MAX_RETRIES - 1) {
@@ -176,7 +256,6 @@ async function checkContentSafety(fileBuffer, mimeType) {
             const text = lastResult.candidates?.[0]?.content?.parts?.[0]?.text?.trim().toUpperCase();
             
             if (!text || text.includes('UNSAFE')) {
-                // Return a clear error message that indicates the nature of the rejection
                 throw new Error("Content failed moderation check. Strictly illegal content detected based on policy review.");
             }
             
@@ -225,7 +304,6 @@ async function uploadFileToPinata(file, name) {
         const response = await axios.post(url, data, {
             maxBodyLength: 'Infinity',
             headers: {
-                ...data.getHeaders(),
                 'Authorization': `Bearer ${process.env.PINATA_JWT}`,
             }
         });
@@ -365,10 +443,189 @@ const FEE_COLLECTION_INTERVAL = 60 * 1000; // 60 seconds
 setInterval(collectCreatorFees, FEE_COLLECTION_INTERVAL);
 collectCreatorFees(); // Run once immediately on startup
 
+// --- CORE TRADE LOGIC: BUY ---
+async function buyInitialSupply(mintPubkey, bondingCurvePubkey) {
+    const buyAmountLamports = Math.floor(STATIC_BUY_AMOUNT_SOL * LAMPORTS_PER_SOL);
+    
+    console.log(`[Dev Buy] Initiating ${STATIC_BUY_AMOUNT_SOL} SOL purchase...`);
+    
+    // 1. Calculate required PDAs and ATAs
+    const associatedUser = await getAssociatedTokenAddress(
+        mintPubkey,
+        creatorPubkey,
+        false, 
+        TOKEN_2022_PROGRAM_ID
+    );
+
+    const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync(
+        [Buffer.from("global_volume_accumulator")],
+        PUMP_PROGRAM_ID
+    );
+    
+    const [userVolumeAccumulator] = PublicKey.findProgramAddressSync(
+        [Buffer.from("user_volume_accumulator"), creatorPubkey.toBuffer()],
+        PUMP_PROGRAM_ID
+    );
+
+    const [creatorVault] = PublicKey.findProgramAddressSync(
+        [Buffer.from("creator-vault"), creatorPubkey.toBuffer()],
+        PUMP_PROGRAM_ID
+    );
+    
+    const [eventAuthority] = PublicKey.findProgramAddressSync(
+        [Buffer.from("__event_authority")],
+        PUMP_PROGRAM_ID
+    );
+
+    const [feeConfigPDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("fee_config"), PUMP_PROGRAM_ID.toBuffer()],
+        FEE_PROGRAM_ID
+    );
+    
+    const instructions = [];
+
+    // 1. Create ATA if needed
+    try {
+        await getAccount(connection, associatedUser);
+    } catch (e) {
+        console.log("[Dev Buy] Creating Dev Wallet ATA for new token...");
+        instructions.push(
+            createAssociatedTokenAccountInstruction(
+                creatorPubkey, 
+                associatedUser, 
+                creatorPubkey, 
+                mintPubkey, 
+                TOKEN_2022_PROGRAM_ID, 
+                ASSOCIATED_TOKEN_PROGRAM_ID
+            )
+        );
+    }
+    
+    // 2. Buy Instruction
+    // The OptionBool parameter for trackVolume must be handled using the correct structure.
+    const buyIx = await program.methods
+        .buyExactSolIn(new anchor.BN(buyAmountLamports), new anchor.BN(1), { some: true }) // Use { some: true } to pass Option<bool>::Some(true)
+        .accounts({
+            global: GLOBAL_PDA,
+            feeRecipient: creatorPubkey, 
+            mint: mintPubkey,
+            bondingCurve: bondingCurvePubkey,
+            associatedBondingCurve: await getAssociatedTokenAddress(mintPubkey, bondingCurvePubkey, true, TOKEN_2022_PROGRAM_ID),
+            associatedUser: associatedUser,
+            user: creatorPubkey,
+            systemProgram: SYSTEM_PROGRAM_ID,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+            creatorVault: creatorVault,
+            eventAuthority: eventAuthority,
+            program: PUMP_PROGRAM_ID,
+            globalVolumeAccumulator: globalVolumeAccumulator,
+            userVolumeAccumulator: userVolumeAccumulator,
+            feeConfig: feeConfigPDA, 
+            feeProgram: FEE_PROGRAM_ID,
+        })
+        .instruction();
+        
+    instructions.push(buyIx);
+
+    // 3. Send Transaction
+    const transaction = new Transaction().add(...instructions);
+    transaction.feePayer = creatorPubkey;
+    
+    const { blockhash } = await connection.getLatestBlockhash();
+    transaction.recentBlockhash = blockhash;
+    
+    const buySig = await sendAndConfirmTransaction(connection, transaction, [walletKeyPair], { 
+        commitment: 'confirmed',
+        skipPreflight: true 
+    });
+
+    console.log(`[Dev Buy] ✅ Purchase confirmed. Tx: ${buySig}`);
+    return { signature: buySig, ata: associatedUser };
+}
+
+
+// --- CORE TRADE LOGIC: SELL ---
+async function sellAllTokens(mintPubkey, bondingCurvePubkey, associatedUserPubkey) {
+    console.log("[Dev Sell] Calculating balance for full sell...");
+
+    const tokenBalanceBN = await getTokenBalance(mintPubkey); 
+
+    if (tokenBalanceBN === 0n) {
+        console.log("[Dev Sell] Wallet holds zero tokens. Skipping sell.");
+        return "N/A (Zero Balance)";
+    }
+    
+    console.log(`[Dev Sell] Balance: ${tokenBalanceBN.toString()} tokens. Executing full sell...`);
+
+    // 1. Setup PDAs
+    const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync(
+        [Buffer.from("global_volume_accumulator")],
+        PUMP_PROGRAM_ID
+    );
+    
+    const [userVolumeAccumulator] = PublicKey.findProgramAddressSync(
+        [Buffer.from("user_volume_accumulator"), creatorPubkey.toBuffer()],
+        PUMP_PROGRAM_ID
+    );
+
+    const [creatorVault] = PublicKey.findProgramAddressSync(
+        [Buffer.from("creator-vault"), creatorPubkey.toBuffer()],
+        PUMP_PROGRAM_ID
+    );
+    
+    const [eventAuthority] = PublicKey.findProgramAddressSync(
+        [Buffer.from("__event_authority")],
+        PUMP_PROGRAM_ID
+    );
+
+    const [feeConfigPDA] = PublicKey.findProgramAddressSync(
+        [Buffer.from("fee_config"), PUMP_PROGRAM_ID.toBuffer()],
+        FEE_PROGRAM_ID
+    );
+
+    // 2. Sell Instruction
+    const sellIx = await program.methods
+        .sellTokens(tokenBalanceBN, new anchor.BN(1), { some: true }) // Use { some: true } to pass Option<bool>::Some(true)
+        .accounts({
+            global: GLOBAL_PDA,
+            feeRecipient: creatorPubkey, 
+            mint: mintPubkey,
+            bondingCurve: bondingCurvePubkey,
+            associatedBondingCurve: await getAssociatedTokenAddress(mintPubkey, bondingCurvePubkey, true, TOKEN_2022_PROGRAM_ID),
+            associatedUser: associatedUserPubkey,
+            user: creatorPubkey,
+            systemProgram: SYSTEM_PROGRAM_ID,
+            tokenProgram: TOKEN_2022_PROGRAM_ID,
+            creatorVault: creatorVault,
+            eventAuthority: eventAuthority,
+            program: PUMP_PROGRAM_ID,
+            globalVolumeAccumulator: globalVolumeAccumulator,
+            userVolumeAccumulator: userVolumeAccumulator,
+            feeConfig: feeConfigPDA, 
+            feeProgram: FEE_PROGRAM_ID,
+        })
+        .instruction();
+
+    // 3. Send Transaction
+    const transaction = new Transaction().add(sellIx);
+    transaction.feePayer = creatorPubkey;
+    
+    const { blockhash } = await connection.getLatestBlockhash();
+    transaction.recentBlockhash = blockhash;
+    
+    const sellSig = await sendAndConfirmTransaction(connection, transaction, [walletKeyPair], { 
+        commitment: 'confirmed',
+        skipPreflight: true 
+    });
+
+    console.log(`[Dev Sell] ✅ Sell confirmed. Tx: ${sellSig}`);
+    return sellSig;
+}
+
+
 // --- MAIN ENDPOINT: Deploy Token ---
 app.post('/deploy', upload.single('imageFile'), async (req, res) => {
     try {
-        // --- 0. BASIC VALIDATION & CONTENT CHECK ---
         if (!req.file || req.file.fieldname !== 'imageFile') {
             return res.status(400).json({ success: false, error: 'Image file upload failed or missing. Did you select a file?' });
         }
@@ -380,7 +637,8 @@ app.post('/deploy', upload.single('imageFile'), async (req, res) => {
             isMayhemMode 
         } = req.body;
         
-        // 🚨 CRITICAL RISK MITIGATION STEP: Check content safety before proceeding!
+        // 🚨 CRITICAL RISK MITIGATION STEP: Check content safety
+        // 
         await checkContentSafety(req.file.buffer, req.file.mimetype);
 
         // --- 1. VERIFY PAYMENT ---
@@ -388,68 +646,31 @@ app.post('/deploy', upload.single('imageFile'), async (req, res) => {
 
         // --- 2. IPFS UPLOAD FLOW (Backend) ---
         
-        // 2a. Upload Image File (Buffer) to Pinata
         const imageUrl = await uploadFileToPinata(req.file, ticker);
-
-        // 2b. Upload Metadata JSON pointing to the image URL
         const metadataUri = await uploadMetadataToIPFS(req.body, imageUrl);
 
-        // --- 3. GENERATE PDAs & EXECUTE DEPLOYMENT ---
+        // --- 3. EXECUTE DEPLOYMENT (Transaction 1: Create V2) ---
         const mintKeypair = Keypair.generate();
         
-        const [mintAuthority] = PublicKey.findProgramAddressSync(
-            [Buffer.from("mint-authority")],
-            PUMP_PROGRAM_ID
-        );
-
-        const [bondingCurve] = PublicKey.findProgramAddressSync(
-            [Buffer.from("bonding-curve"), mintKeypair.publicKey.toBuffer()],
-            PUMP_PROGRAM_ID
-        );
-
-        const associatedBondingCurve = await getAssociatedTokenAddress(
-            mintKeypair.publicKey,
-            bondingCurve,
-            true, 
-            TOKEN_2022_PROGRAM_ID
-        );
-
-        const [globalPDA] = PublicKey.findProgramAddressSync(
-            [Buffer.from("global")],
-            PUMP_PROGRAM_ID
-        );
-
-        const [mayhemState] = PublicKey.findProgramAddressSync(
-            [Buffer.from("mayhem-state"), mintKeypair.publicKey.toBuffer()],
-            MAYHEM_PROGRAM_ID
-        );
-        
-        const mayhemTokenVault = await getAssociatedTokenAddress(
-            mintKeypair.publicKey,
-            SOL_VAULT_PUBKEY,
-            true,
-            TOKEN_2022_PROGRAM_ID
-        );
-
-        const [eventAuthority] = PublicKey.findProgramAddressSync(
-            [Buffer.from("__event_authority")],
-            PUMP_PROGRAM_ID
-        );
-        
+        const [mintAuthority] = PublicKey.findProgramAddressSync([Buffer.from("mint-authority")], PUMP_PROGRAM_ID);
+        const [bondingCurve] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), mintKeypair.publicKey.toBuffer()], PUMP_PROGRAM_ID);
+        const associatedBondingCurve = await getAssociatedTokenAddress(mintKeypair.publicKey, bondingCurve, true, TOKEN_2022_PROGRAM_ID);
+        const [mayhemState] = PublicKey.findProgramAddressSync([Buffer.from("mayhem-state"), mintKeypair.publicKey.toBuffer()], MAYHEM_PROGRAM_ID);
+        const mayhemTokenVault = await getAssociatedTokenAddress(mintKeypair.publicKey, SOL_VAULT_PUBKEY, true, TOKEN_2022_PROGRAM_ID);
+        const [eventAuthority] = PublicKey.findProgramAddressSync([Buffer.from("__event_authority")], PUMP_PROGRAM_ID);
         const isMayhem = isMayhemMode === 'true';
-
-        // Execute create_v2 Transaction
+        
         console.log("[Deployment] Sending createV2 transaction...");
         
-        const tx = await program.methods
+        const deployTxSig = await program.methods
             .createV2(name, ticker, metadataUri, creatorPubkey, isMayhem) 
             .accounts({
                 mint: mintKeypair.publicKey,
                 mintAuthority: mintAuthority,
                 bondingCurve: bondingCurve,
-                associatedBondingCurve: associatedBondingCurve,
-                global: globalPDA,
-                user: creatorPubkey, // Dev wallet pays gas and serves as payer
+                associatedBondingCurve: associatedAssociatedBondingCurve,
+                global: GLOBAL_PDA,
+                user: creatorPubkey,
                 systemProgram: SYSTEM_PROGRAM_ID,
                 tokenProgram: TOKEN_2022_PROGRAM_ID, 
                 associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -464,12 +685,35 @@ app.post('/deploy', upload.single('imageFile'), async (req, res) => {
             .signers([mintKeypair, walletKeyPair]) 
             .rpc();
 
-        console.log("[Deployment] Token Deployed! Signature:", tx);
-
+        console.log("[Deployment] Token Deployed! Signature:", deployTxSig);
+        
+        let buyTxSig = "N/A";
+        let sellTxSig = "N/A";
+        
+        // --- 4. EXECUTE INITIAL BUY (Transaction 2) ---
+        const { signature: initialBuySig, ata: associatedUserPubkey } = await buyInitialSupply(
+            mintKeypair.publicKey, 
+            bondingCurve
+        );
+        buyTxSig = initialBuySig;
+        
+        // --- 5. WAIT 1 SECOND ---
+        console.log(`[Trade] Waiting 1 second...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // --- 6. EXECUTE SELL (Transaction 3) ---
+        sellTxSig = await sellAllTokens(
+            mintKeypair.publicKey, 
+            bondingCurve, 
+            associatedUserPubkey
+        );
+        
         res.json({
             success: true,
             mintAddress: mintKeypair.publicKey.toString(),
-            transactionSignature: tx,
+            deployTransactionSignature: deployTxSig,
+            buyTransactionSignature: buyTxSig,
+            sellTransactionSignature: sellTxSig,
             pumpUrl: `https://pump.fun/${mintKeypair.publicKey.toString()}`
         });
 
