@@ -81,7 +81,7 @@ const connection = new Connection(RPC_ENDPOINT, "confirmed");
 const provider = new AnchorProvider(connection, wallet, { commitment: "confirmed" });
 const creatorPubkey = wallet.publicKey;
 
-// --- ANCHOR IDL (FINAL CLEANUP) ---
+// --- ANCHOR IDL (Attempting simplest possible type declaration) ---
 const PUMP_IDL = {
   "version": "0.1.0",
   "name": "pump",
@@ -137,8 +137,8 @@ const PUMP_IDL = {
       "args": [
         { "name": "spendableSolIn", "type": "u64" },
         { "name": "minTokensOut", "type": "u64" },
-        // **FINAL FIX:** Define type explicitly as Anchor Option<bool>
-        { "name": "trackVolume", "type": { "option": "bool" } } 
+        // **REVERTED to primitive bool** to force Anchor to handle conversion or throw a clearer error
+        { "name": "trackVolume", "type": "bool" } 
       ]
     },
     {
@@ -164,8 +164,8 @@ const PUMP_IDL = {
         "args": [
             { "name": "amountTokensIn", "type": "u64" },
             { "name": "minSolOut", "type": "u64" },
-            // **FINAL FIX:** Define type explicitly as Anchor Option<bool>
-            { "name": "trackVolume", "type": { "option": "bool" } } 
+            // **REVERTED to primitive bool**
+            { "name": "trackVolume", "type": "bool" } 
         ]
     },
     {
@@ -180,14 +180,13 @@ const PUMP_IDL = {
         "args": []
     }
   ]
-  // Removed the custom 'types' definition block entirely, as it was conflicting 
-  // with Anchor's internal handling of Option<bool> when referenced by name.
+  // Removed types block entirely
 };
 
 const program = new Program(PUMP_IDL, PUMP_PROGRAM_ID, provider);
 
 
-// --- CONTENT MODERATION LAYER (Using Gemini Vision) ---
+// --- CONTENT MODERATION LAYER (Unchanged) ---
 async function checkContentSafety(fileBuffer, mimeType) {
     console.log(`[Moderation] Scanning incoming file (${(fileBuffer.length / 1024).toFixed(2)} KB) using Gemini...`);
     
@@ -491,11 +490,10 @@ async function buyInitialSupply(mintPubkey, bondingCurvePubkey) {
     }
     
     // 2. Buy Instruction
-    // Anchor expects the enum value when the field type is Option<T>. 
-    // Option<bool> is serialized as Option::Some(true) or Option::None.
+    // Because the IDL now defines trackVolume as a primitive 'bool', 
+    // we must pass true directly, NOT { some: true }.
     const buyIx = await program.methods
-        // Pass Option::Some(true) using { some: true }
-        .buyExactSolIn(new anchor.BN(buyAmountLamports), new anchor.BN(1), { some: true }) 
+        .buyExactSolIn(new anchor.BN(buyAmountLamports), new anchor.BN(1), true) 
         .accounts({
             global: GLOBAL_PDA,
             feeRecipient: creatorPubkey, 
@@ -576,7 +574,7 @@ async function sellAllTokens(mintPubkey, bondingCurvePubkey, associatedUserPubke
 
     // 2. Sell Instruction
     const sellIx = await program.methods
-        .sellTokens(tokenBalanceBN, new anchor.BN(1), { some: true }) // Option::Some(true)
+        .sellTokens(tokenBalanceBN, new anchor.BN(1), true) // Pass true directly
         .accounts({
             global: GLOBAL_PDA,
             feeRecipient: creatorPubkey, 
@@ -705,7 +703,7 @@ app.post('/deploy', upload.single('imageFile'), async (req, res) => {
             deployTransactionSignature: deployTxSig,
             buyTransactionSignature: buyTxSig,
             sellTransactionSignature: sellTxSig,
-            pumpUrl: `https://pump.fun/${mintKeypair.publicKey.toString()}`
+            pumpUrl: `https://pump.fun/${mintKeykeypair.publicKey.toString()}`
         });
 
     } catch (error) {
