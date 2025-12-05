@@ -9,7 +9,8 @@ const {
     SystemProgram, 
     LAMPORTS_PER_SOL, 
     Transaction, 
-    sendAndConfirmTransaction 
+    sendAndConfirmTransaction,
+    TransactionInstruction // Needed for manual instruction building
 } = require('@solana/web3.js');
 const { Program, AnchorProvider, Wallet } = require('@coral-xyz/anchor');
 const anchor = require('@coral-xyz/anchor');
@@ -18,6 +19,10 @@ const bs58 = require('bs58');
 const axios = require('axios');
 const FormData = require('form-data');
 const { Readable } = require('stream');
+// Imported to manually serialize instruction data
+const borsh = require('borsh'); 
+const { Buffer } = require('buffer'); 
+
 
 // --- CONFIGURATION & PROGRAM IDS ---
 const PORT = process.env.PORT || 3000;
@@ -81,10 +86,11 @@ const connection = new Connection(RPC_ENDPOINT, "confirmed");
 const provider = new AnchorProvider(connection, wallet, { commitment: "confirmed" });
 const creatorPubkey = wallet.publicKey;
 
-// --- ANCHOR IDL (Attempting simplest possible type declaration) ---
+// --- ANCHOR IDL (Minimal structure used only for Program object creation) ---
 const PUMP_IDL = {
   "version": "0.1.0",
   "name": "pump",
+  // We only include the non-problematic instructions here to create the Program object
   "instructions": [
     {
       "name": "createV2",
@@ -115,60 +121,6 @@ const PUMP_IDL = {
       ]
     },
     {
-      "name": "buyExactSolIn", 
-      "accounts": [
-        { "name": "global", "isMut": false, "isSigner": false },
-        { "name": "feeRecipient", "isMut": true, "isSigner": false },
-        { "name": "mint", "isMut": false, "isSigner": false },
-        { "name": "bondingCurve", "isMut": true, "isSigner": false },
-        { "name": "associatedBondingCurve", "isMut": true, "isSigner": false },
-        { "name": "associatedUser", "isMut": true, "isSigner": false },
-        { "name": "user", "isMut": true, "isSigner": true },
-        { "name": "systemProgram", "isMut": false, "isSigner": false },
-        { "name": "tokenProgram", "isMut": false, "isSigner": false },
-        { "name": "creatorVault", "isMut": true, "isSigner": false },
-        { "name": "eventAuthority", "isMut": false, "isSigner": false },
-        { "name": "program", "isMut": false, "isSigner": false },
-        { "name": "globalVolumeAccumulator", "isMut": false, "isSigner": false },
-        { "name": "userVolumeAccumulator", "isMut": true, "isSigner": false },
-        { "name": "feeConfig", "isMut": false, "isSigner": false },
-        { "name": "feeProgram", "isMut": false, "isSigner": false }
-      ],
-      "args": [
-        { "name": "spendableSolIn", "type": "u64" },
-        { "name": "minTokensOut", "type": "u64" },
-        // **REVERTED to primitive bool** to force Anchor to handle conversion or throw a clearer error
-        { "name": "trackVolume", "type": "bool" } 
-      ]
-    },
-    {
-        "name": "sellTokens", 
-        "accounts": [
-            { "name": "global", "isMut": false, "isSigner": false },
-            { "name": "feeRecipient", "isMut": true, "isSigner": false },
-            { "name": "mint", "isMut": false, "isSigner": false },
-            { "name": "bondingCurve", "isMut": true, "isSigner": false },
-            { "name": "associatedBondingCurve", "isMut": true, "isSigner": false },
-            { "name": "associatedUser", "isMut": true, "isSigner": false },
-            { "name": "user", "isMut": true, "isSigner": true },
-            { "name": "systemProgram", "isMut": false, "isSigner": false },
-            { "name": "tokenProgram", "isMut": false, "isSigner": false },
-            { "name": "creatorVault", "isMut": true, "isSigner": false },
-            { "name": "eventAuthority", "isMut": false, "isSigner": false },
-            { "name": "program", "isMut": false, "isSigner": false },
-            { "name": "globalVolumeAccumulator", "isMut": false, "isSigner": false },
-            { "name": "userVolumeAccumulator", "isMut": true, "isSigner": false },
-            { "name": "feeConfig", "isMut": false, "isSigner": false },
-            { "name": "feeProgram", "isMut": false, "isSigner": false }
-        ],
-        "args": [
-            { "name": "amountTokensIn", "type": "u64" },
-            { "name": "minSolOut", "type": "u64" },
-            // **REVERTED to primitive bool**
-            { "name": "trackVolume", "type": "bool" } 
-        ]
-    },
-    {
         "name": "collectCreatorFee",
         "accounts": [
             { "name": "creator", "isMut": true, "isSigner": false },
@@ -180,10 +132,86 @@ const PUMP_IDL = {
         "args": []
     }
   ]
-  // Removed types block entirely
 };
 
 const program = new Program(PUMP_IDL, PUMP_PROGRAM_ID, provider);
+
+// --- MANUAL INSTRUCTION ENCODING SCHEMAS ---
+
+// 8 bytes discriminator + argument data
+const BUY_IX_DISCRIMINATOR = Buffer.from([56, 252, 116, 8, 158, 223, 205, 95]); // Hash of 'buyExactSolIn'
+const SELL_IX_DISCRIMINATOR = Buffer.from([51, 230, 133, 164, 1, 127, 131, 173]); // Hash of 'sell'
+
+// Defines how the arguments for buyExactSolIn are serialized (Borsh format)
+const BUY_IX_SCHEMA = {
+    struct: {
+        spendableSolIn: 'u64',
+        minTokensOut: 'u64',
+        // Option<bool> is serialized as a 1-byte presence flag (0 or 1) followed by the data (1 byte bool).
+        // Since we always pass true, we write 1 (Some) then 1 (true).
+        // However, Anchor uses a specific structure for method calls.
+        // We'll treat this as a simple boolean, but manually append the Option byte.
+        trackVolume: 'u8', // We'll manually serialize this, but define it as a u8 placeholder for now
+    }
+};
+
+
+// --- Manual Instruction Builder Function ---
+
+// Encodes the BUY instruction data (Discriminator + Args)
+function encodeBuyInstructionData(spendableSolIn, minTokensOut, trackVolume) {
+    const buffer = new anchor.utils.Buffer(20); // 8 bytes discriminator + 8 bytes u64 + 4 bytes padding (just in case)
+    let offset = 0;
+
+    // 1. Write Discriminator
+    BUY_IX_DISCRIMINATOR.copy(buffer, offset);
+    offset += 8;
+
+    // 2. Write Args (u64 lamports, u64 min tokens)
+    buffer.writeBigUInt64LE(BigInt(spendableSolIn), offset);
+    offset += 8;
+    buffer.writeBigUInt64LE(BigInt(minTokensOut), offset);
+    offset += 8;
+
+    // 3. Write Option<bool> (TrackVolume)
+    // Anchor runtime expects an object like { some: true }. When manually encoding, 
+    // Option<bool>::Some(true) is [1, 1]. Option::None is [0].
+    if (trackVolume === true) {
+        buffer.writeUInt8(1, offset++); // Option::Some
+        buffer.writeUInt8(1, offset++); // bool value (true)
+    } else {
+        buffer.writeUInt8(0, offset++); // Option::None
+    }
+
+    // Return only the written buffer segment
+    return buffer.slice(0, offset);
+}
+
+// Encodes the SELL instruction data (Discriminator + Args)
+function encodeSellInstructionData(amountTokensIn, minSolOut, trackVolume) {
+    const buffer = new anchor.utils.Buffer(24); 
+    let offset = 0;
+
+    // 1. Write Discriminator
+    SELL_IX_DISCRIMINATOR.copy(buffer, offset);
+    offset += 8;
+
+    // 2. Write Args (u64 tokens, u64 min SOL out)
+    buffer.writeBigUInt64LE(BigInt(amountTokensIn), offset);
+    offset += 8;
+    buffer.writeBigUInt64LE(BigInt(minSolOut), offset);
+    offset += 8;
+
+    // 3. Write Option<bool> (TrackVolume)
+    if (trackVolume === true) {
+        buffer.writeUInt8(1, offset++); // Option::Some
+        buffer.writeUInt8(1, offset++); // bool value (true)
+    } else {
+        buffer.writeUInt8(0, offset++); // Option::None
+    }
+    
+    return buffer.slice(0, offset);
+}
 
 
 // --- CONTENT MODERATION LAYER (Unchanged) ---
@@ -431,13 +459,12 @@ const FEE_COLLECTION_INTERVAL = 60 * 1000; // 60 seconds
 setInterval(collectCreatorFees, FEE_COLLECTION_INTERVAL);
 collectCreatorFees(); // Run once immediately on startup
 
-// --- CORE TRADE LOGIC: BUY ---
+// --- CORE TRADE LOGIC: BUY (MANUAL WEB3.JS INSTRUCTION) ---
 async function buyInitialSupply(mintPubkey, bondingCurvePubkey) {
     const buyAmountLamports = Math.floor(STATIC_BUY_AMOUNT_SOL * LAMPORTS_PER_SOL);
     
     console.log(`[Dev Buy] Initiating ${STATIC_BUY_AMOUNT_SOL} SOL purchase...`);
     
-    // 1. Calculate required PDAs and ATAs
     const associatedUser = await getAssociatedTokenAddress(
         mintPubkey,
         creatorPubkey,
@@ -460,16 +487,6 @@ async function buyInitialSupply(mintPubkey, bondingCurvePubkey) {
         PUMP_PROGRAM_ID
     );
     
-    const [eventAuthority] = PublicKey.findProgramAddressSync(
-        [Buffer.from("__event_authority")],
-        PUMP_PROGRAM_ID
-    );
-
-    const [feeConfigPDA] = PublicKey.findProgramAddressSync(
-        [Buffer.from("fee_config"), PUMP_PROGRAM_ID.toBuffer()],
-        FEE_PROGRAM_ID
-    );
-    
     const instructions = [];
 
     // 1. Create ATA if needed
@@ -489,32 +506,33 @@ async function buyInitialSupply(mintPubkey, bondingCurvePubkey) {
         );
     }
     
-    // 2. Buy Instruction
-    // Because the IDL now defines trackVolume as a primitive 'bool', 
-    // we must pass true directly, NOT { some: true }.
-    const buyIx = await program.methods
-        .buyExactSolIn(new anchor.BN(buyAmountLamports), new anchor.BN(1), true) 
-        .accounts({
-            global: GLOBAL_PDA,
-            feeRecipient: creatorPubkey, 
-            mint: mintPubkey,
-            bondingCurve: bondingCurvePubkey,
-            associatedBondingCurve: await getAssociatedTokenAddress(mintPubkey, bondingCurvePubkey, true, TOKEN_2022_PROGRAM_ID),
-            associatedUser: associatedUser,
-            user: creatorPubkey,
-            systemProgram: SYSTEM_PROGRAM_ID,
-            tokenProgram: TOKEN_2022_PROGRAM_ID,
-            creatorVault: creatorVault,
-            eventAuthority: eventAuthority,
-            program: PUMP_PROGRAM_ID,
-            globalVolumeAccumulator: globalVolumeAccumulator,
-            userVolumeAccumulator: userVolumeAccumulator,
-            feeConfig: feeConfigPDA, 
-            feeProgram: FEE_PROGRAM_ID,
-        })
-        .instruction();
-        
-    instructions.push(buyIx);
+    // 2. Buy Instruction (Manually Encoded)
+    const data = encodeBuyInstructionData(buyAmountLamports, 1, true); // (SOL in, Min Tokens out, Track Volume)
+
+    const keys = [
+        { pubkey: GLOBAL_PDA, isWritable: false, isSigner: false },
+        { pubkey: creatorPubkey, isWritable: true, isSigner: false }, // feeRecipient (Dev Wallet)
+        { pubkey: mintPubkey, isWritable: false, isSigner: false },
+        { pubkey: bondingCurvePubkey, isWritable: true, isSigner: false },
+        { pubkey: await getAssociatedTokenAddress(mintPubkey, bondingCurvePubkey, true, TOKEN_2022_PROGRAM_ID), isWritable: true, isSigner: false }, // associatedBondingCurve
+        { pubkey: associatedUser, isWritable: true, isSigner: false }, // associatedUser (Dev Wallet ATA)
+        { pubkey: creatorPubkey, isWritable: true, isSigner: true }, // user (Payer)
+        { pubkey: SYSTEM_PROGRAM_ID, isWritable: false, isSigner: false },
+        { pubkey: TOKEN_2022_PROGRAM_ID, isWritable: false, isSigner: false },
+        { pubkey: creatorVault, isWritable: true, isSigner: false },
+        { pubkey: (await PublicKey.findProgramAddress([Buffer.from("__event_authority")], PUMP_PROGRAM_ID))[0], isWritable: false, isSigner: false },
+        { pubkey: PUMP_PROGRAM_ID, isWritable: false, isSigner: false },
+        { pubkey: globalVolumeAccumulator, isWritable: false, isSigner: false },
+        { pubkey: userVolumeAccumulator, isWritable: true, isSigner: false },
+        { pubkey: (await PublicKey.findProgramAddress([Buffer.from("fee_config"), PUMP_PROGRAM_ID.toBuffer()], FEE_PROGRAM_ID))[0], isWritable: false, isSigner: false },
+        { pubkey: FEE_PROGRAM_ID, isWritable: false, isSigner: false },
+    ];
+
+    instructions.push(new TransactionInstruction({
+        keys,
+        programId: PUMP_PROGRAM_ID,
+        data,
+    }));
 
     // 3. Send Transaction
     const transaction = new Transaction().add(...instructions);
@@ -533,7 +551,7 @@ async function buyInitialSupply(mintPubkey, bondingCurvePubkey) {
 }
 
 
-// --- CORE TRADE LOGIC: SELL ---
+// --- CORE TRADE LOGIC: SELL (MANUAL WEB3.JS INSTRUCTION) ---
 async function sellAllTokens(mintPubkey, bondingCurvePubkey, associatedUserPubkey) {
     console.log("[Dev Sell] Calculating balance for full sell...");
 
@@ -562,41 +580,35 @@ async function sellAllTokens(mintPubkey, bondingCurvePubkey, associatedUserPubke
         PUMP_PROGRAM_ID
     );
     
-    const [eventAuthority] = PublicKey.findProgramAddressSync(
-        [Buffer.from("__event_authority")],
-        PUMP_PROGRAM_ID
-    );
+    // 2. Sell Instruction (Manually Encoded)
+    const data = encodeSellInstructionData(tokenBalanceBN, 1, true); // (Tokens in, Min SOL out, Track Volume)
 
-    const [feeConfigPDA] = PublicKey.findProgramAddressSync(
-        [Buffer.from("fee_config"), PUMP_PROGRAM_ID.toBuffer()],
-        FEE_PROGRAM_ID
-    );
+    const keys = [
+        { pubkey: GLOBAL_PDA, isWritable: false, isSigner: false },
+        { pubkey: creatorPubkey, isWritable: true, isSigner: false }, // feeRecipient (Dev Wallet)
+        { pubkey: mintPubkey, isWritable: false, isSigner: false },
+        { pubkey: bondingCurvePubkey, isWritable: true, isSigner: false },
+        { pubkey: await getAssociatedTokenAddress(mintPubkey, bondingCurvePubkey, true, TOKEN_2022_PROGRAM_ID), isWritable: true, isSigner: false }, // associatedBondingCurve
+        { pubkey: associatedUserPubkey, isWritable: true, isSigner: false }, // associatedUser (Dev Wallet ATA)
+        { pubkey: creatorPubkey, isWritable: true, isSigner: true }, // user (Payer)
+        { pubkey: SYSTEM_PROGRAM_ID, isWritable: false, isSigner: false },
+        { pubkey: TOKEN_2022_PROGRAM_ID, isWritable: false, isSigner: false },
+        { pubkey: creatorVault, isWritable: true, isSigner: false },
+        { pubkey: (await PublicKey.findProgramAddress([Buffer.from("__event_authority")], PUMP_PROGRAM_ID))[0], isWritable: false, isSigner: false },
+        { pubkey: PUMP_PROGRAM_ID, isWritable: false, isSigner: false },
+        { pubkey: globalVolumeAccumulator, isWritable: false, isSigner: false },
+        { pubkey: userVolumeAccumulator, isWritable: true, isSigner: false },
+        { pubkey: (await PublicKey.findProgramAddress([Buffer.from("fee_config"), PUMP_PROGRAM_ID.toBuffer()], FEE_PROGRAM_ID))[0], isWritable: false, isSigner: false },
+        { pubkey: FEE_PROGRAM_ID, isWritable: false, isSigner: false },
+    ];
 
-    // 2. Sell Instruction
-    const sellIx = await program.methods
-        .sellTokens(tokenBalanceBN, new anchor.BN(1), true) // Pass true directly
-        .accounts({
-            global: GLOBAL_PDA,
-            feeRecipient: creatorPubkey, 
-            mint: mintPubkey,
-            bondingCurve: bondingCurvePubkey,
-            associatedBondingCurve: await getAssociatedTokenAddress(mintPubkey, bondingCurvePubkey, true, TOKEN_2022_PROGRAM_ID),
-            associatedUser: associatedUserPubkey,
-            user: creatorPubkey,
-            systemProgram: SYSTEM_PROGRAM_ID,
-            tokenProgram: TOKEN_2022_PROGRAM_ID,
-            creatorVault: creatorVault,
-            eventAuthority: eventAuthority,
-            program: PUMP_PROGRAM_ID,
-            globalVolumeAccumulator: globalVolumeAccumulator,
-            userVolumeAccumulator: userVolumeAccumulator,
-            feeConfig: feeConfigPDA, 
-            feeProgram: FEE_PROGRAM_ID,
-        })
-        .instruction();
+    const transaction = new Transaction().add(new TransactionInstruction({
+        keys,
+        programId: PUMP_PROGRAM_ID,
+        data,
+    }));
 
     // 3. Send Transaction
-    const transaction = new Transaction().add(sellIx);
     transaction.feePayer = creatorPubkey;
     
     const { blockhash } = await connection.getLatestBlockhash();
@@ -607,7 +619,6 @@ async function sellAllTokens(mintPubkey, bondingCurvePubkey, associatedUserPubke
         skipPreflight: true 
     });
 
-    console.log(`[Dev Sell] ✅ Sell confirmed. Tx: ${sellSig}`);
     return sellSig;
 }
 
@@ -680,6 +691,7 @@ app.post('/deploy', upload.single('imageFile'), async (req, res) => {
         let sellTxSig = "N/A";
         
         // --- 4. EXECUTE INITIAL BUY (Transaction 2) ---
+        // This now uses the manually encoded instruction
         const { signature: initialBuySig, ata: associatedUserPubkey } = await buyInitialSupply(
             mintKeypair.publicKey, 
             bondingCurve
@@ -691,6 +703,7 @@ app.post('/deploy', upload.single('imageFile'), async (req, res) => {
         await new Promise(resolve => setTimeout(resolve, 1000));
         
         // --- 6. EXECUTE SELL (Transaction 3) ---
+        // This now uses the manually encoded instruction
         sellTxSig = await sellAllTokens(
             mintKeypair.publicKey, 
             bondingCurve, 
@@ -703,7 +716,7 @@ app.post('/deploy', upload.single('imageFile'), async (req, res) => {
             deployTransactionSignature: deployTxSig,
             buyTransactionSignature: buyTxSig,
             sellTransactionSignature: sellTxSig,
-            pumpUrl: `https://pump.fun/${mintKeykeypair.publicKey.toString()}`
+            pumpUrl: `https://pump.fun/${mintKeypair.publicKey.toString()}`
         });
 
     } catch (error) {
