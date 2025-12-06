@@ -201,7 +201,46 @@ async function getTotalLaunches() { if(!db) return 0; const res = await db.get('
 async function getStats() { if(!db) return { accumulatedFeesLamports: 0, lifetimeFeesLamports: 0, totalPumpBoughtLamports: 0 }; const acc = await db.get('SELECT value FROM stats WHERE key = ?', 'accumulatedFeesLamports'); const life = await db.get('SELECT value FROM stats WHERE key = ?', 'lifetimeFeesLamports'); const pump = await db.get('SELECT value FROM stats WHERE key = ?', 'totalPumpBoughtLamports'); return { accumulatedFeesLamports: acc ? acc.value : 0, lifetimeFeesLamports: life ? life.value : 0, totalPumpBoughtLamports: pump ? pump.value : 0 }; }
 async function resetAccumulatedFees(used) { const cur = await db.get('SELECT value FROM stats WHERE key = ?', 'accumulatedFeesLamports'); await db.run('UPDATE stats SET value = ? WHERE key = ?', [Math.max(0, (cur ? cur.value : 0) - used), 'accumulatedFeesLamports']); }
 async function logPurchase(type, data) { try { await db.run('INSERT INTO logs (type, data) VALUES (?, ?)', [type, JSON.stringify(data)]); } catch (e) {} }
-async function saveTokenData(pk, mint, meta) { try { await db.run(`INSERT INTO tokens (mint, userPubkey, name, ticker, description, twitter, website, image, isMayhemMode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [mint, pk, meta.name, meta.ticker, meta.description, meta.twitter, meta.website, image, meta.isMayhemMode]); const shard = pk.slice(0, 2).toLowerCase(); const dir = path.join(ACTIVE_DATA_DIR, shard); ensureDir(dir); fs.writeFileSync(path.join(dir, `${mint}.json`), JSON.stringify({ userPubkey: pk, mint, metadata: meta, timestamp: new Date().toISOString() }, null, 2)); } catch (e) { logger.error("Save Token Error", {err:e.message}); } }
+async function saveTokenData(pk, mint, meta) {
+    try {
+        await db.run(
+            `INSERT INTO tokens (mint, userPubkey, name, ticker, description, twitter, website, image, isMayhemMode)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                mint,
+                pk,
+                meta.name,
+                meta.ticker,
+                meta.description,
+                meta.twitter,
+                meta.website,
+                meta.image,        // <- FIXED
+                meta.isMayhemMode,
+            ]
+        );
+
+        const shard = pk.slice(0, 2).toLowerCase();
+        const dir = path.join(ACTIVE_DATA_DIR, shard);
+        ensureDir(dir);
+
+        fs.writeFileSync(
+            path.join(dir, `${mint}.json`),
+            JSON.stringify(
+                {
+                    userPubkey: pk,
+                    mint,
+                    metadata: meta,
+                    timestamp: new Date().toISOString(),
+                },
+                null,
+                2
+            )
+        );
+    } catch (e) {
+        logger.error("Save Token Error", { err: e.message });
+    }
+}
+
 
 // --- WORKER ---
 let worker;
@@ -489,16 +528,34 @@ app.post('/api/prepare-metadata', async (req, res) => {
 
 app.post('/api/deploy', async (req, res) => {
     try {
-        const { name, ticker, metadataUri, userTx, userPubkey, isMayhemMode } = req.body;
+        const {
+            name,
+            ticker,
+            description,
+            twitter,
+            website,
+            image,
+            metadataUri,
+            userTx,
+            userPubkey,
+            isMayhemMode,
+        } = req.body;
+
         if (!metadataUri) return res.status(400).json({ error: "Missing metadata URI" });
 
         try {
-            await db.run('INSERT INTO transactions (signature, userPubkey) VALUES (?, ?)', [userTx, userPubkey]);
+            await db.run(
+                'INSERT INTO transactions (signature, userPubkey) VALUES (?, ?)',
+                [userTx, userPubkey]
+            );
         } catch (dbErr) {
-            if (dbErr.message.includes('UNIQUE constraint') || dbErr.message.includes('unique index')) {
+            if (
+                dbErr.message.includes('UNIQUE constraint') ||
+                dbErr.message.includes('unique index')
+            ) {
                 return res.status(400).json({ error: "Transaction signature already used." });
             }
-            throw dbErr; 
+            throw dbErr;
         }
 
         // NEW: Retry Loop for Transaction Verification
@@ -530,12 +587,23 @@ app.post('/api/deploy', async (req, res) => {
         await addFees(0.05 * LAMPORTS_PER_SOL);
 
         if (!deployQueue) return res.status(500).json({ error: "Deployment Queue Unavailable" });
-        const job = await deployQueue.add('deployToken', { name, ticker, metadataUri, userPubkey, isMayhemMode });
-        res.json({ success: true, jobId: job.id, message: "Queued" });
 
-    } catch (err) { 
-        logger.error("Deploy Request Error", {error: err.message}); 
-        res.status(500).json({ error: err.message }); 
+        const job = await deployQueue.add('deployToken', {
+            name,
+            ticker,
+            description,
+            twitter,
+            website,
+            image,
+            userPubkey,
+            isMayhemMode,
+            metadataUri,
+        });
+
+        res.json({ success: true, jobId: job.id, message: "Queued" });
+    } catch (err) {
+        logger.error("Deploy API Error", { error: err.message });
+        res.status(500).json({ error: err.message });
     }
 });
 
