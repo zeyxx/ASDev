@@ -6,6 +6,7 @@ const { Program, AnchorProvider, Wallet, BN } = require('@coral-xyz/anchor');
 const bs58 = require('bs58');
 const fs = require('fs');
 const axios = require('axios');
+const FormData = require('form-data');
 
 // --- Configuration ---
 const PORT = process.env.PORT || 3000;
@@ -14,7 +15,7 @@ const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const PINATA_JWT = process.env.PINATA_JWT;
 
 if (!DEV_WALLET_PRIVATE_KEY || !HELIUS_API_KEY || !PINATA_JWT) {
-    console.error("❌ ERROR: Missing Environment Variables (DEV_WALLET_PRIVATE_KEY, HELIUS_API_KEY, or PINATA_JWT).");
+    console.error("❌ ERROR: Missing Environment Variables.");
     process.exit(1);
 }
 
@@ -33,7 +34,7 @@ const FEE_RECIPIENT = new PublicKey("FNLWHjvjptwC7LxycdK3Knqcv5ptC19C9rynn6u2S1t
 // --- Setup ---
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 const connection = new Connection(RPC_URL, CONNECTION_CONFIG);
 let devKeypair;
@@ -46,18 +47,54 @@ try {
 const wallet = new Wallet(devKeypair);
 const provider = new AnchorProvider(connection, wallet, CONNECTION_CONFIG);
 
-// Initialize Program with Explicit ID
-const idl = JSON.parse(fs.readFileSync('./pump_idl.json', 'utf8'));
+// --- CRITICAL FIX START ---
+const idlRaw = fs.readFileSync('./pump_idl.json', 'utf8');
+const idl = JSON.parse(idlRaw);
+
+// Explicitly forcing the address in the IDL object itself to match the PublicKey
+idl.address = PUMP_PROGRAM_ID.toString();
+
+// Initialize Program
+// Passing PUMP_PROGRAM_ID as the second argument forces Anchor to use this address
+// instead of looking it up in the IDL or defaulting.
 const program = new Program(idl, PUMP_PROGRAM_ID, provider);
+// --- CRITICAL FIX END ---
 
 // --- Helper Functions ---
 
-async function uploadMetadataToPinata(name, symbol, description, twitter, website) {
+async function uploadImageToPinata(base64Data) {
+    try {
+        const base64Content = base64Data.split(',')[1];
+        const buffer = Buffer.from(base64Content, 'base64');
+        const formData = new FormData();
+        formData.append('file', buffer, { filename: 'token_image.png' });
+
+        const response = await axios.post('https://api.pinata.cloud/pinning/pinFileToIPFS', formData, {
+            headers: {
+                'Authorization': `Bearer ${PINATA_JWT}`,
+                ...formData.getHeaders()
+            }
+        });
+        return `https://gateway.pinata.cloud/ipfs/${response.data.IpfsHash}`;
+    } catch (error) {
+        console.error("❌ Image Upload Failed:", error.message);
+        return "https://gateway.pinata.cloud/ipfs/QmPc5gX8W8h9j5h8x8h8h8h8h8h8h8h8h8h8h8h8h8"; 
+    }
+}
+
+async function uploadMetadataToPinata(name, symbol, description, twitter, website, imageBase64) {
+    let imageUrl = "https://gateway.pinata.cloud/ipfs/QmPc5gX8W8h9j5h8x8h8h8h8h8h8h8h8h8h8h8h8h8"; 
+    
+    if (imageBase64) {
+        console.log("Uploading Image to Pinata...");
+        imageUrl = await uploadImageToPinata(imageBase64);
+    }
+
     const metadata = {
         name: name,
         symbol: symbol,
         description: description,
-        image: "https://gateway.pinata.cloud/ipfs/QmPc5gX8W8h9j5h8x8h8h8h8h8h8h8h8h8h8h8h8h8", 
+        image: imageUrl,
         extensions: { twitter: twitter || "", website: website || "" }
     };
 
@@ -67,8 +104,8 @@ async function uploadMetadataToPinata(name, symbol, description, twitter, websit
         });
         return `https://gateway.pinata.cloud/ipfs/${response.data.IpfsHash}`;
     } catch (error) {
-        console.error("Pinata Upload Error:", error.response ? error.response.data : error.message);
-        throw new Error("Failed to upload metadata to Pinata");
+        console.error("Metadata Upload Error:", error.message);
+        throw new Error("Failed to upload metadata");
     }
 }
 
@@ -99,16 +136,19 @@ function getATA(mint, owner) {
     )[0];
 }
 
-// --- API Route ---
+// --- Routes ---
+
+app.get('/api/health', (req, res) => {
+    res.json({ status: "online", wallet: devKeypair.publicKey.toString() });
+});
 
 app.post('/api/deploy', async (req, res) => {
     try {
-        const { name, ticker, description, twitter, website, userTx, userPubkey } = req.body;
-        console.log(`🔥 Request received: Deploy ${ticker} for ${userPubkey}`);
+        const { name, ticker, description, twitter, website, userTx, userPubkey, image } = req.body;
+        console.log(`🔥 Request: Deploy ${ticker}`);
 
-        // 1. Verify Payment
         const txInfo = await connection.getParsedTransaction(userTx, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
-        if (!txInfo) return res.status(400).json({ error: "Transaction not found on chain." });
+        if (!txInfo) return res.status(400).json({ error: "Transaction not found." });
         
         const transfers = txInfo.transaction.message.instructions.flatMap(ix => {
             if (ix.programId.toString() === SystemProgram.programId.toString() && ix.parsed.type === 'transfer') {
@@ -118,16 +158,11 @@ app.post('/api/deploy', async (req, res) => {
         });
 
         const validPayment = transfers.some(t => t.destination === devKeypair.publicKey.toString() && t.lamports >= 0.05 * LAMPORTS_PER_SOL);
-        if (!validPayment) {
-            console.log("❌ Payment verification failed.");
-            return res.status(400).json({ error: "0.05 SOL Payment verification failed." });
-        }
+        if (!validPayment) return res.status(400).json({ error: "0.05 SOL Payment verification failed." });
 
-        // 2. Upload Metadata
-        const metadataUri = await uploadMetadataToPinata(name, ticker, description, twitter, website);
-        console.log("✅ Metadata Uploaded:", metadataUri);
+        const metadataUri = await uploadMetadataToPinata(name, ticker, description, twitter, website, image);
+        console.log("✅ Metadata:", metadataUri);
 
-        // 3. Transactions
         const mintKeypair = Keypair.generate();
         const mint = mintKeypair.publicKey;
         const creator = devKeypair.publicKey;
@@ -138,8 +173,6 @@ app.post('/api/deploy', async (req, res) => {
         const mayhemTokenVault = getATA(mint, solVault);
         const associatedUser = getATA(mint, creator);
 
-        // Instruction 1: Create V2
-        // Argument order must match IDL exactly: name, symbol, uri, creator, isMayhemMode
         const createIx = await program.methods.createV2(name, ticker, metadataUri, creator, false)
             .accounts({
                 mint, mintAuthority, bondingCurve, associatedBondingCurve,
@@ -153,12 +186,7 @@ app.post('/api/deploy', async (req, res) => {
             })
             .instruction();
 
-        // Instruction 2: Buy 0.01 SOL
-        const buyIx = await program.methods.buyExactSolIn(
-            new BN(0.01 * LAMPORTS_PER_SOL), 
-            new BN(1), 
-            false 
-        )
+        const buyIx = await program.methods.buyExactSolIn(new BN(0.01 * LAMPORTS_PER_SOL), new BN(1), false)
             .accounts({
                 global, feeRecipient: FEE_RECIPIENT, mint, bondingCurve, associatedBondingCurve,
                 associatedUser, user: creator,
@@ -174,14 +202,12 @@ app.post('/api/deploy', async (req, res) => {
         tx.feePayer = creator;
         
         const sig = await sendAndConfirmTransaction(connection, tx, [devKeypair, mintKeypair]);
-        console.log(`✅ Deployed: https://solscan.io/tx/${sig}`);
+        console.log(`✅ Deployed: ${sig}`);
 
-        // 4. Schedule Sell
         setTimeout(async () => {
             try {
                 const bal = await connection.getTokenAccountBalance(associatedUser);
                 if (bal.value.uiAmount > 0) {
-                    console.log(`Selling ${bal.value.amount} tokens...`);
                     const sellIx = await program.methods.sell(new BN(bal.value.amount), new BN(0))
                         .accounts({
                             global, feeRecipient: FEE_RECIPIENT, mint, bondingCurve, associatedBondingCurve,
@@ -193,21 +219,18 @@ app.post('/api/deploy', async (req, res) => {
                             feeConfig, feeProgram: FEE_PROGRAM_ID
                         })
                         .instruction();
-                    
                     const sellTx = new Transaction().add(sellIx);
-                    await sendAndConfirmTransaction(connection, sellTx, [devKeypair]);
-                    console.log(`💰 Sold positions for ${ticker}`);
+                    const sellSig = await sendAndConfirmTransaction(connection, sellTx, [devKeypair]);
+                    console.log(`💰 Sold: ${sellSig}`);
                 }
-            } catch (e) {
-                console.error("❌ Sell failed:", e.message);
-            }
+            } catch (e) { console.error("Sell error:", e.message); }
         }, 1500); 
 
         res.json({ success: true, mint: mint.toString(), signature: sig });
 
     } catch (err) {
-        console.error("🔥 Server Error:", err);
-        res.status(500).json({ error: err.message || "Internal Server Error" });
+        console.error("🔥 Error:", err);
+        res.status(500).json({ error: err.message });
     }
 });
 
