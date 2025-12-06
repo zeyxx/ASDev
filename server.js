@@ -231,8 +231,8 @@ if (redisConnection) {
                 { pubkey: MAYHEM_PROGRAM_ID, isSigner: false, isWritable: false }, 
                 { pubkey: GLOBAL_PARAMS, isSigner: false, isWritable: false },
                 { pubkey: SOL_VAULT, isSigner: false, isWritable: true },
-                { pubkey: isMayhemMode ? mayhemState : PublicKey.default, isSigner: false, isWritable: true },
-                { pubkey: isMayhemMode ? mayhemTokenVault : PublicKey.default, isSigner: false, isWritable: true },
+                { pubkey: mayhemState : PublicKey.default, isSigner: false, isWritable: true },
+                { pubkey: mayhemTokenVault : PublicKey.default, isSigner: false, isWritable: true },
                 { pubkey: eventAuthority, isSigner: false, isWritable: false },
                 { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false }
             ];
