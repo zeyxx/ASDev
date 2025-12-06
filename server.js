@@ -14,7 +14,7 @@ const { Queue, Worker } = require('bullmq');
 const IORedis = require('ioredis');
 
 // --- Config ---
-const VERSION = "v10.8.2-DEBUG-VERBOSE";
+const VERSION = "v10.9.0-MANUAL-IX";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -36,11 +36,9 @@ if (!fs.existsSync(DISK_ROOT)) { if (!fs.existsSync('./data')) fs.mkdirSync('./d
 const logStream = fs.createWriteStream(DEBUG_LOG_FILE, { flags: 'a' });
 function log(level, message, meta = {}) {
     const timestamp = new Date().toISOString();
-    const logMsg = `[${timestamp}] [${level.toUpperCase()}] ${message} ${JSON.stringify(meta)}`;
-    logStream.write(logMsg + '\n');
+    logStream.write(`[${timestamp}] [${level.toUpperCase()}] ${message} ${JSON.stringify(meta)}\n`);
     const consoleMethod = level === 'error' ? console.error : console.log;
-    // Log to console for realtime visibility
-    consoleMethod(logMsg);
+    consoleMethod(`[${level.toUpperCase()}] ${message}`, meta);
 }
 const logger = { info: (m, d) => log('info', m, d), warn: (m, d) => log('warn', m, d), error: (m, d) => log('error', m, d) };
 
@@ -192,63 +190,94 @@ if (redisConnection) {
             const mint = mintKeypair.publicKey;
             const creator = devKeypair.publicKey;
 
-            logger.info("Keys Generated", { mint: mint.toString(), creator: creator.toString() });
-
             // PDAs
-            logger.info("Deriving PDAs...");
             const { global, bondingCurve, associatedBondingCurve, eventAuthority, feeConfig, globalVolumeAccumulator } = getPumpPDAs(mint);
             const [mintAuthority] = PublicKey.findProgramAddressSync([Buffer.from("mint-authority")], PUMP_PROGRAM_ID);
             const [metadata] = PublicKey.findProgramAddressSync([Buffer.from("metadata"), MPL_TOKEN_METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()], MPL_TOKEN_METADATA_PROGRAM_ID);
             const [creatorVault] = PublicKey.findProgramAddressSync([Buffer.from("creator-vault"), creator.toBuffer()], PUMP_PROGRAM_ID);
             const [userVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from("user_volume_accumulator"), creator.toBuffer()], PUMP_PROGRAM_ID);
 
-            logger.info("PDAs Derived", { bondingCurve: bondingCurve.toString(), metadata: metadata.toString() });
-
             // Mayhem PDAs
             let mayhemState, mayhemTokenVault;
             if (isMayhemMode) {
-                logger.info("Mayhem Mode Enabled - Deriving Mayhem PDAs");
                 [mayhemState] = PublicKey.findProgramAddressSync([Buffer.from("mayhem-state"), mint.toBuffer()], MAYHEM_PROGRAM_ID);
                 mayhemTokenVault = getATA(mint, SOL_VAULT, TOKEN_PROGRAM_2022_ID);
             }
 
-            // Create V2
-            logger.info("Building createV2 Instruction", {
-                name, ticker, metadataUri, creator: creator.toString(), isMayhemMode
-            });
+            // --- MANUAL create_v2 INSTRUCTION ---
+            // Bypass Anchor IDL serialization issues by manually building buffer
+            const discriminator = Buffer.from([214, 144, 76, 236, 95, 139, 49, 180]); // create_v2
+            const serializeString = (str) => { const b = Buffer.from(str, 'utf8'); const len = Buffer.alloc(4); len.writeUInt32LE(b.length, 0); return Buffer.concat([len, b]); };
+            
+            // Args: name, symbol, uri, creator, is_mayhem_mode
+            const data = Buffer.concat([
+                discriminator,
+                serializeString(name),
+                serializeString(ticker),
+                serializeString(metadataUri),
+                creator.toBuffer(), // PublicKey is 32 bytes
+                Buffer.from([isMayhemMode ? 1 : 0]) // Bool is 1 byte
+            ]);
 
-            // [STRICT] Ensure all arguments are passed clearly
-            const createIx = await program.methods.createV2(
-                name, 
-                ticker, 
-                metadataUri, 
-                creator, 
-                isMayhemMode
-            ).accounts({
-                mint, mintAuthority, bondingCurve, associatedBondingCurve, global,
-                user: creator, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_2022_ID,
-                associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID, mayhemProgramId: MAYHEM_PROGRAM_ID,
-                globalParams: GLOBAL_PARAMS, solVault: SOL_VAULT,
-                mayhemState: isMayhemMode ? mayhemState : PublicKey.default,
-                mayhemTokenVault: isMayhemMode ? mayhemTokenVault : PublicKey.default,
-                eventAuthority, program: PUMP_PROGRAM_ID
-            }).instruction();
+            const keys = [
+                { pubkey: mint, isSigner: true, isWritable: true },
+                { pubkey: mintAuthority, isSigner: false, isWritable: false },
+                { pubkey: bondingCurve, isSigner: false, isWritable: true },
+                { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
+                { pubkey: global, isSigner: false, isWritable: false },
+                { pubkey: MPL_TOKEN_METADATA_PROGRAM_ID, isSigner: false, isWritable: false }, // REQUIRED
+                { pubkey: metadata, isSigner: false, isWritable: true }, // REQUIRED (Mut)
+                { pubkey: creator, isSigner: true, isWritable: true },
+                { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+                { pubkey: TOKEN_PROGRAM_2022_ID, isSigner: false, isWritable: false },
+                { pubkey: ASSOCIATED_TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+                { pubkey: MAYHEM_PROGRAM_ID, isSigner: false, isWritable: false }, // Mayhem ID is ReadOnly unless initializing state? Usually read.
+                { pubkey: GLOBAL_PARAMS, isSigner: false, isWritable: false },
+                { pubkey: SOL_VAULT, isSigner: false, isWritable: true }, // Vaults are mutable
+                { pubkey: isMayhemMode ? mayhemState : PublicKey.default, isSigner: false, isWritable: true },
+                { pubkey: isMayhemMode ? mayhemTokenVault : PublicKey.default, isSigner: false, isWritable: true },
+                { pubkey: eventAuthority, isSigner: false, isWritable: false },
+                { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false }
+            ];
 
-            logger.info("createV2 Instruction Built");
+            const createIx = new TransactionInstruction({ keys, programId: PUMP_PROGRAM_ID, data });
 
             // Buy
             const feeRecipient = isMayhemMode ? MAYHEM_FEE_RECIPIENT : FEE_RECIPIENT_STANDARD;
             const associatedUser = getATA(mint, creator, TOKEN_PROGRAM_2022_ID);
             
-            logger.info("Building buyExactSolIn Instruction");
-            const buyIx = await program.methods.buyExactSolIn(new BN(0.01 * LAMPORTS_PER_SOL), new BN(1), false).accounts({
-                global, feeRecipient, mint, bondingCurve, associatedBondingCurve, associatedUser,
-                user: creator, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_2022_ID,
-                creatorVault, eventAuthority, program: PUMP_PROGRAM_ID, globalVolumeAccumulator, userVolumeAccumulator,
-                feeConfig, feeProgram: FEE_PROGRAM_ID
-            }).instruction();
+            // Manual buy_exact_sol_in to avoid Anchor errors
+            const buyDiscriminator = Buffer.from([56, 252, 116, 8, 158, 223, 205, 95]);
+            const amountBuf = new BN(0.01 * LAMPORTS_PER_SOL).toArrayLike(Buffer, 'le', 8);
+            const minSolBuf = new BN(1).toArrayLike(Buffer, 'le', 8);
+            // OptionBool: 0 (None) or 1 (Some) + Bool. We want Some(false) or None? 
+            // Docs say `track_volume: Option<bool>`.
+            // Standard Option serialization: 1 byte (0=None, 1=Some). If Some, followed by value.
+            // We pass "Some(false)" -> [1, 0]
+            const trackVolumeBuf = Buffer.from([1, 0]); 
+            
+            const buyData = Buffer.concat([buyDiscriminator, amountBuf, minSolBuf, trackVolumeBuf]);
 
-            logger.info("buyExactSolIn Instruction Built");
+            const buyKeys = [
+                { pubkey: global, isSigner: false, isWritable: false },
+                { pubkey: feeRecipient, isSigner: false, isWritable: true },
+                { pubkey: mint, isSigner: false, isWritable: false },
+                { pubkey: bondingCurve, isSigner: false, isWritable: true },
+                { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
+                { pubkey: associatedUser, isSigner: false, isWritable: true },
+                { pubkey: creator, isSigner: true, isWritable: true },
+                { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+                { pubkey: TOKEN_PROGRAM_2022_ID, isSigner: false, isWritable: false },
+                { pubkey: creatorVault, isSigner: false, isWritable: true },
+                { pubkey: eventAuthority, isSigner: false, isWritable: false },
+                { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false },
+                { pubkey: globalVolumeAccumulator, isSigner: false, isWritable: false }, // Read only usually?
+                { pubkey: userVolumeAccumulator, isSigner: false, isWritable: true },
+                { pubkey: feeConfig, isSigner: false, isWritable: false },
+                { pubkey: FEE_PROGRAM_ID, isSigner: false, isWritable: false }
+            ];
+
+            const buyIx = new TransactionInstruction({ keys: buyKeys, programId: PUMP_PROGRAM_ID, data: buyData });
 
             const tx = new Transaction();
             addPriorityFee(tx); // Gas
@@ -261,7 +290,7 @@ if (redisConnection) {
             
             await saveTokenData(userPubkey, mint.toString(), { name, ticker, description, twitter, website, image, isMayhemMode });
 
-            // Sell (Delayed)
+            // Sell (Delayed) - Keeping simple for now
             setTimeout(async () => { try { 
                 const bal = await connection.getTokenAccountBalance(associatedUser); 
                 if (bal.value && bal.value.uiAmount > 0) { 
@@ -338,7 +367,7 @@ async function uploadMetadataToPinata(n, s, d, t, w, i) {
 
 // --- Routes ---
 app.get('/api/version', (req, res) => res.json({ version: VERSION }));
-app.get('/api/health', async (req, res) => { try { const stats = await getStats(); const launches = await getTotalLaunches(); const logs = await db.all('SELECT * FROM logs ORDER BY id DESC LIMIT 50'); res.json({ status: "online", wallet: devKeypair.publicKey.toString(), lifetimeFees: (stats.lifetimeFeesLamports / LAMPORTS_PER_SOL).toFixed(4), totalPumpBought: (stats.totalPumpBoughtLamports / LAMPORTS_PER_SOL).toFixed(4), totalLaunches: launches, recentLogs: logs.map(l => ({ ...JSON.parse(l.data), type: l.type, timestamp: l.timestamp })), headerImageUrl: HEADER_IMAGE_URL }); } catch (e) { res.status(500).json({ error: "DB Error" }); } });
+app.get('/api/health', async (req, res) => { try { const stats = await getStats(); const launches = await getTotalLaunches(); const logs = await db.all('SELECT * FROM logs ORDER BY timestamp DESC LIMIT 50'); res.json({ status: "online", wallet: devKeypair.publicKey.toString(), lifetimeFees: (stats.lifetimeFeesLamports / LAMPORTS_PER_SOL).toFixed(4), totalPumpBought: (stats.totalPumpBoughtLamports / LAMPORTS_PER_SOL).toFixed(4), totalLaunches: launches, recentLogs: logs.map(l => ({ ...JSON.parse(l.data), type: l.type, timestamp: l.timestamp })), headerImageUrl: HEADER_IMAGE_URL }); } catch (e) { res.status(500).json({ error: "DB Error" }); } });
 app.get('/api/check-holder', async (req, res) => { const { userPubkey } = req.query; if (!userPubkey) return res.json({ isHolder: false }); try { const result = await db.get('SELECT mint, rank FROM token_holders WHERE holderPubkey = ? LIMIT 1', userPubkey); res.json({ isHolder: !!result, ...(result || {}) }); } catch (e) { res.status(500).json({ error: "DB Error" }); } });
 app.get('/api/leaderboard', async (req, res) => { const { userPubkey } = req.query; try { const rows = await db.all('SELECT * FROM tokens ORDER BY volume24h DESC LIMIT 10'); const leaderboard = await Promise.all(rows.map(async (r) => { let isUserTopHolder = false; if (userPubkey) { const holderEntry = await db.get('SELECT rank FROM token_holders WHERE mint = ? AND holderPubkey = ?', [r.mint, userPubkey]); if (holderEntry) isUserTopHolder = true; } return { mint: r.mint, name: r.name, ticker: r.ticker, image: r.image, price: (r.marketCap / 1000000000).toFixed(6), volume: r.volume24h, isUserTopHolder }; })); res.json(leaderboard); } catch (e) { res.status(500).json([]); } });
 app.get('/api/recent-launches', async (req, res) => { try { const rows = await db.all('SELECT userPubkey, ticker, mint, timestamp FROM tokens ORDER BY timestamp DESC LIMIT 10'); res.json(rows.map(r => ({ userSnippet: r.userPubkey.slice(0, 5), ticker: r.ticker, mint: r.mint }))); } catch (e) { res.status(500).json([]); } });
