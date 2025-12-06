@@ -97,7 +97,7 @@ const TOKEN_PROGRAM_2022_ID = safePublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqC
 
 const ASSOCIATED_TOKEN_PROGRAM_ID = safePublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", "11111111111111111111111111111111", "ASSOCIATED_TOKEN_PROGRAM_ID");
 const FEE_PROGRAM_ID = safePublicKey("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ", "11111111111111111111111111111111", "FEE_PROGRAM_ID");
-const FEE_RECIPIENT = safePublicKey("CebN5WGQ4vvepcovs24O1bJIRfD567TE81P9j2k8qB8", "11111111111111111111111111111111", "FEE_RECIPIENT"); 
+const FEE_RECIPIENT = safePublicKey("CebN5WGQ4jvEPvsVU4EoHEpgzq1VV7AbicfhtW4xC9iM", "11111111111111111111111111111111", "FEE_RECIPIENT"); 
 
 const MAYHEM_PROGRAM_ID = safePublicKey("MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e", "11111111111111111111111111111111", "MAYHEM_PROGRAM_ID");
 const MAYHEM_FEE_RECIPIENT = safePublicKey("GesfTA3X2arioaHp8bbKdjG9vJtskViWACZoYvxp4twS", "11111111111111111111111111111111", "MAYHEM_FEE_RECIPIENT");
@@ -292,8 +292,8 @@ if (redisConnection) {
             const associatedUser = getATA(mint, creator, TOKEN_PROGRAM_2022_ID);
             const targetFeeRecipient = isMayhemMode ? MAYHEM_FEE_RECIPIENT : FEE_RECIPIENT;
             
-            // NOTE: 'buy' instruction takes 2 args (amount, maxSolCost)
-            const buyIx = await program.methods.buy(new BN(0.01 * LAMPORTS_PER_SOL), new BN(LAMPORTS_PER_SOL))
+            // NOTE: 'buy' instruction takes 3 args (amount, maxSolCost, trackVolume) in IDL
+            const buyIx = await program.methods.buy(new BN(0.01 * LAMPORTS_PER_SOL), new BN(LAMPORTS_PER_SOL), [false])
                 .accounts({
                     global,
                     feeRecipient: targetFeeRecipient,
@@ -603,15 +603,8 @@ async function runPurchaseAndFees() {
                  const [feeConfig] = PublicKey.findProgramAddressSync([Buffer.from("fee_config"), FEE_PROGRAM_ID.toBuffer()], FEE_PROGRAM_ID);
                  
                  // UPDATED: buyExactSolIn signature and accounts
-                 // OptionBool with {bool: false} or [false] is tricky in JS/Anchor. 
-                 // If defined as struct { bool }, passing `false` usually fails.
-                 // Correct way for OptionBool tuple struct is likely { '0': false } or similar, but with raw boolean `false` as 3rd argument, 
-                 // the IDL parser might expect something else.
-                 // Since we don't track volume, we can pass null? No, type is not Option<bool>.
-                 // Try passing { bool: false } if needed, but assuming standard Anchor behavior for single field struct might just require the value?
-                 // Let's try passing `false` directly first, if failed, the error will be specific. 
-                 // However, the error "Type not found" was the main issue.
-                 const buyIx = await program.methods.buyExactSolIn(buyAmount, new BN(1), false)
+                 // Using [false] for OptionBool as per IDL
+                 const buyIx = await program.methods.buyExactSolIn(buyAmount, new BN(1), [false])
                     .accounts({ 
                         global: PublicKey.findProgramAddressSync([Buffer.from("global")], PUMP_PROGRAM_ID)[0], 
                         feeRecipient: FEE_RECIPIENT, 
