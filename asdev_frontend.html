@@ -6,6 +6,8 @@
     <title>Protocol Launcher</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
+    <!-- Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
     <link href="https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <style>
         /* TERMINAL FIRE THEME */
@@ -16,22 +18,23 @@
             min-height: 100vh; 
             display: flex; 
             justify-content: center; 
-            padding-top: 40px; 
+            align-items: center;
+            padding: 20px;
         }
         .font-mono { font-family: 'JetBrains Mono', monospace; }
         
         #app-container {
-            width: 100%; max-width: 600px;
+            width: 100%; max-width: 900px; /* Increased Size */
             background-color: #451a03;
             border: 6px solid #7c2d12;
             border-radius: 16px;
             overflow: hidden;
-            box-shadow: 0 20px 50px rgba(0,0,0,0.8);
+            box-shadow: 0 30px 60px rgba(0,0,0,0.9);
             position: relative;
         }
 
         .ticker-wrap { width: 100%; background-color: #2a1005; border-bottom: 2px solid #7c2d12; overflow: hidden; white-space: nowrap; height: 32px; display: flex; align-items: center; }
-        .ticker { display: inline-block; padding-left: 100%; animation: marquee 20s linear infinite; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #fb923c; }
+        .ticker { display: inline-block; padding-left: 100%; animation: marquee 25s linear infinite; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #fb923c; }
         @keyframes marquee { 0% { transform: translate(0, 0); } 100% { transform: translate(-100%, 0); } }
 
         .panel {
@@ -57,160 +60,306 @@
         }
         .input-field:focus { border-color: #ea580c; }
         
+        /* Custom File Input */
+        input[type="file"]::file-selector-button {
+            background: #ea580c; border: none; color: #2a1005; padding: 8px 12px;
+            font-family: 'JetBrains Mono'; font-weight: bold; cursor: pointer;
+            margin-right: 15px; border-radius: 2px;
+        }
+
         .btn-action {
             background: #ea580c; border: 2px solid #9a3412;
             color: #2a1005; font-weight: bold; font-family: 'JetBrains Mono';
-            text-transform: uppercase; width: 100%; padding: 14px;
+            text-transform: uppercase; width: 100%; padding: 16px; font-size: 18px;
             cursor: pointer; transition: all 0.1s;
-            box-shadow: 2px 2px 0 #7c2d12;
+            box-shadow: 4px 4px 0 #7c2d12;
             border-radius: 4px;
         }
-        .btn-action:hover { background: #f97316; transform: translate(-1px, -1px); box-shadow: 3px 3px 0 #7c2d12; }
+        .btn-action:hover { background: #f97316; transform: translate(-1px, -1px); box-shadow: 5px 5px 0 #7c2d12; }
         .btn-action:active { transform: translate(2px, 2px); box-shadow: 0 0 0; }
         .btn-action:disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(100%); transform: none; box-shadow: none; }
 
         .status-box {
             background: rgba(0,0,0,0.3); border: 1px solid #ea580c;
-            color: #fdba74; padding: 10px; font-size: 12px; font-family: 'JetBrains Mono';
-            text-align: center; margin-top: 10px; display: none; border-radius: 4px;
+            color: #fdba74; padding: 12px; font-size: 14px; font-family: 'JetBrains Mono';
+            text-align: center; margin-top: 15px; display: none; border-radius: 4px;
         }
         .status-success { border-color: #22c55e; color: #4ade80; background: rgba(20, 83, 45, 0.3); }
         .status-error { border-color: #ef4444; color: #fca5a5; background: rgba(127, 29, 29, 0.3); }
-        .status-normal { border-color: #ea580c; color: #fdba74; }
+        
+        .sys-status { color: #ef4444; font-weight: bold; transition: color 0.5s; }
+        .sys-status.online { color: #22c55e; text-shadow: 0 0 8px rgba(34, 197, 94, 0.6); }
 
-        .connect-btn {
-            background: #2a1005;
-            border: 2px solid #ea580c;
-            color: #ea580c;
-            padding: 8px 16px;
-            font-family: 'JetBrains Mono';
-            font-size: 12px;
-            font-weight: bold;
-            cursor: pointer;
-            border-radius: 4px;
+        #image-preview {
+            width: 120px; height: 120px; 
+            border: 2px dashed #7c2d12; 
+            display: flex; align-items: center; justify-content: center;
+            background: #2a1005; color: #7c2d12; font-family: 'JetBrains Mono';
+            font-size: 10px; overflow: hidden; border-radius: 8px;
         }
-        .connect-btn:hover { background: rgba(234, 88, 12, 0.1); }
+        #image-preview img { width: 100%; height: 100%; object-fit: cover; }
     </style>
 </head>
 <body>
 
 <div id="app-container">
-    <div class="ticker-wrap"><div class="ticker">INITIALIZING LAUNCH SEQUENCE... PUMP FUN DEPLOYER READY... WAITING FOR INPUT...</div></div>
+    <div class="ticker-wrap"><div class="ticker">INITIALIZING LAUNCH SEQUENCE... PUMP FUN DEPLOYER READY... SECURE CONNECTION ESTABLISHED... WAITING FOR INPUT...</div></div>
 
-    <div class="p-6">
-        <div class="flex justify-between items-center mb-6 border-b-4 border-orange-900 pb-4">
-            <div class="flex items-center gap-3">
-                <div class="text-4xl animate-bounce">🔥</div>
+    <div class="p-8">
+        <!-- Header -->
+        <div class="flex justify-between items-start mb-8 border-b-4 border-orange-900 pb-6">
+            <div class="flex items-center gap-4">
+                <div class="text-5xl animate-bounce">🔥</div>
                 <div>
-                    <h1 class="text-3xl font-bold text-white">IGNITION</h1>
-                    <p class="text-orange-400 text-xs font-mono uppercase">Protocol Launchpad</p>
+                    <h1 class="text-4xl font-bold text-white tracking-wide">IGNITION</h1>
+                    <p class="text-orange-400 text-sm font-mono uppercase tracking-widest mt-1">Protocol Launchpad v2.0</p>
                 </div>
             </div>
-            <button id="connect-btn" class="connect-btn">CONNECT WALLET</button>
-        </div>
-
-        <div class="panel">
-            <h3 class="text-orange-500 font-mono text-sm mb-4 uppercase tracking-widest border-b border-orange-900/50 pb-2">Token Parameters</h3>
             
-            <label class="block text-xs text-orange-300 font-mono mb-1">NAME</label>
-            <input type="text" id="name" class="input-field" placeholder="e.g. Infernal Coin">
-
-            <label class="block text-xs text-orange-300 font-mono mb-1">TICKER</label>
-            <input type="text" id="ticker" class="input-field" placeholder="e.g. BURN">
-
-            <label class="block text-xs text-orange-300 font-mono mb-1">DESCRIPTION</label>
-            <textarea id="desc" class="input-field h-24" placeholder="Description of the asset..."></textarea>
-
-            <div class="grid grid-cols-2 gap-4">
-                <div>
-                    <label class="block text-xs text-orange-300 font-mono mb-1">TWITTER</label>
-                    <input type="text" id="twitter" class="input-field" placeholder="Optional">
+            <!-- Wallet Panel -->
+            <div class="flex flex-col items-end gap-2">
+                <div id="wallet-ui" class="hidden flex items-center gap-2 bg-orange-950 border border-orange-800 p-2 rounded">
+                    <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                    <span id="wallet-addr" class="font-mono text-xs text-orange-200"></span>
+                    <span id="wallet-bal" class="font-mono text-xs text-white font-bold ml-2">0.00 SOL</span>
+                    
+                    <button onclick="refreshWallet()" title="Refresh Balance" class="ml-2 text-orange-400 hover:text-white transition">
+                        <i data-lucide="refresh-cw" width="14"></i>
+                    </button>
+                    <button onclick="disconnectWallet()" title="Disconnect" class="ml-1 text-red-400 hover:text-red-200 transition">
+                        <i data-lucide="log-out" width="14"></i>
+                    </button>
                 </div>
-                <div>
-                    <label class="block text-xs text-orange-300 font-mono mb-1">WEBSITE</label>
-                    <input type="text" id="website" class="input-field" placeholder="Optional">
-                </div>
+                <button id="connect-btn" class="bg-orange-900/50 border border-orange-700 text-orange-500 px-6 py-3 rounded font-mono text-xs hover:bg-orange-900/80 transition uppercase tracking-wider font-bold">
+                    Connect Wallet
+                </button>
             </div>
         </div>
 
-        <div class="panel bg-orange-900/10">
-            <div class="flex justify-between items-center mb-4 font-mono text-xs">
-                <span class="text-orange-300">SERVICE FEE</span>
-                <span class="text-white font-bold">0.05 SOL</span>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            
+            <!-- Left Col: Image -->
+            <div class="panel col-span-1 flex flex-col items-center justify-start">
+                <h3 class="text-orange-500 font-mono text-xs mb-4 uppercase tracking-widest w-full text-left border-b border-orange-900/50 pb-2">Asset Preview</h3>
+                <div id="image-preview" class="mb-4 shadow-lg shadow-orange-900/20">NO IMAGE</div>
+                <input type="file" id="image-file" class="input-field text-xs" accept="image/*" onchange="previewImage(event)">
+                <p class="text-[10px] text-orange-400 font-mono text-center">Supports PNG, JPG, GIF.<br>Max size 4MB.</p>
             </div>
-            <div class="flex justify-between items-center mb-6 font-mono text-xs">
-                <span class="text-orange-300">INITIAL BUY</span>
-                <span class="text-green-400 font-bold">0.01 SOL (Auto-Sell)</span>
+
+            <!-- Right Col: Form -->
+            <div class="panel col-span-2">
+                <h3 class="text-orange-500 font-mono text-xs mb-4 uppercase tracking-widest border-b border-orange-900/50 pb-2">Token Metadata</h3>
+                
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs text-orange-300 font-mono mb-1">NAME</label>
+                        <input type="text" id="name" class="input-field" placeholder="e.g. Infernal Coin">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-orange-300 font-mono mb-1">TICKER</label>
+                        <input type="text" id="ticker" class="input-field" placeholder="e.g. BURN">
+                    </div>
+                </div>
+
+                <label class="block text-xs text-orange-300 font-mono mb-1">DESCRIPTION</label>
+                <textarea id="desc" class="input-field h-24" placeholder="Description of the asset..."></textarea>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs text-orange-300 font-mono mb-1">TWITTER (OPTIONAL)</label>
+                        <input type="text" id="twitter" class="input-field" placeholder="@username">
+                    </div>
+                    <div>
+                        <label class="block text-xs text-orange-300 font-mono mb-1">WEBSITE (OPTIONAL)</label>
+                        <input type="text" id="website" class="input-field" placeholder="https://...">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Action Area -->
+        <div class="panel bg-gradient-to-r from-orange-950 to-[#2a1005]">
+            <div class="flex justify-between items-center mb-4 font-mono text-sm border-b border-orange-900 pb-4">
+                <div class="flex flex-col">
+                    <span class="text-orange-400 text-xs">DEPLOYMENT COST</span>
+                    <span class="text-white font-bold text-lg">0.05 SOL</span>
+                </div>
+                <div class="flex flex-col text-right">
+                    <span class="text-orange-400 text-xs">INITIAL BUY STRATEGY</span>
+                    <span class="text-green-400 font-bold text-lg">0.01 SOL <span class="text-xs text-orange-500">(Auto-Sell)</span></span>
+                </div>
             </div>
             
-            <button id="deploy-btn" class="btn-action">INITIATE LAUNCH</button>
+            <button id="deploy-btn" class="btn-action">INITIATE LAUNCH SEQUENCE</button>
             <div id="status-msg" class="status-box"></div>
         </div>
         
-        <div id="result-area" class="panel hidden">
-            <h3 class="text-green-400 font-bold font-mono mb-2 text-center text-xl">DEPLOYMENT SUCCESSFUL</h3>
-            <p class="text-xs text-orange-200 font-mono break-all text-center mb-4">MINT: <span id="mint-addr" class="text-white font-bold"></span></p>
-            <a id="tx-link" href="#" target="_blank" class="block text-center text-sm font-mono text-blue-400 underline hover:text-blue-300 border border-blue-900 bg-blue-900/20 py-2 rounded">VIEW TRANSACTION ON SOLSCAN</a>
+        <!-- Result -->
+        <div id="result-area" class="panel hidden border-green-600 bg-green-950/20">
+            <h3 class="text-green-400 font-bold font-mono mb-4 text-center text-2xl tracking-widest">DEPLOYMENT SUCCESSFUL</h3>
+            <div class="flex flex-col gap-2 mb-4 bg-black/30 p-4 rounded border border-green-800">
+                <p class="text-xs text-green-200 font-mono">MINT ADDRESS</p>
+                <p id="mint-addr" class="text-white font-mono text-sm break-all font-bold select-all"></p>
+            </div>
+            <a id="tx-link" href="#" target="_blank" class="block text-center text-sm font-mono text-black bg-green-500 hover:bg-green-400 py-3 rounded font-bold transition">VIEW ON SOLSCAN</a>
         </div>
 
-        <div class="text-center text-[10px] font-mono text-orange-900 mt-4">
-            SYSTEM STATUS: ONLINE | RPC: HELIUS MAINNET
+        <!-- Footer System Status -->
+        <div class="flex justify-between items-center mt-6 text-[10px] font-mono border-t border-orange-900 pt-3">
+            <span class="text-orange-700">RPC: HELIUS MAINNET</span>
+            <span>BACKEND UPLINK: <span id="sys-status" class="sys-status">OFFLINE</span></span>
         </div>
     </div>
 </div>
 
 <script>
     // --- CONFIGURATION ---
-    const BACKEND_URL = "https://asdev-1kvy.onrender.com/api/deploy";
+    const BACKEND_URL = "https://asdev-1kvy.onrender.com"; 
     const DEV_WALLET_PUBKEY = "FNLWHjvjptwC7LxycdK3Knqcv5ptC19C9rynn6u2S1tB";
 
+    // --- STATE ---
     let userPubkey = null;
-    const connectBtn = document.getElementById('connect-btn');
-    const deployBtn = document.getElementById('deploy-btn');
-    const statusBox = document.getElementById('status-msg');
+    let connection = new solanaWeb3.Connection("https://mainnet.helius-rpc.com/?api-key=09734990-234e-4f0e-9273-047df7970922"); // Public Helius or your own proxy if needed for balance
 
+    // --- UI ELEMENTS ---
+    const ui = {
+        connectBtn: document.getElementById('connect-btn'),
+        walletUI: document.getElementById('wallet-ui'),
+        walletAddr: document.getElementById('wallet-addr'),
+        walletBal: document.getElementById('wallet-bal'),
+        deployBtn: document.getElementById('deploy-btn'),
+        statusBox: document.getElementById('status-msg'),
+        sysStatus: document.getElementById('sys-status'),
+        imgPreview: document.getElementById('image-preview')
+    };
+
+    // --- ICONS ---
+    lucide.createIcons();
+
+    // --- HEALTH CHECK ---
+    const checkHealth = async () => {
+        try {
+            const res = await fetch(`${BACKEND_URL}/api/health`);
+            if (res.ok) {
+                ui.sysStatus.innerText = "ONLINE";
+                ui.sysStatus.classList.add("online");
+            } else {
+                throw new Error("Backend Error");
+            }
+        } catch (e) {
+            ui.sysStatus.innerText = "OFFLINE";
+            ui.sysStatus.classList.remove("online");
+        }
+    };
+    setInterval(checkHealth, 5000); 
+    checkHealth();
+
+    // --- UTILS ---
     const showStatus = (msg, type) => {
-        statusBox.innerText = msg;
-        statusBox.style.display = 'block';
-        if (type === 'error') statusBox.className = 'status-box status-error';
-        else if (type === 'success') statusBox.className = 'status-box status-success';
-        else statusBox.className = 'status-box status-normal';
+        ui.statusBox.innerText = msg;
+        ui.statusBox.style.display = 'block';
+        ui.statusBox.className = type === 'error' ? 'status-box status-error' : (type === 'success' ? 'status-box status-success' : 'status-box');
+    };
+
+    const toBase64 = file => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = error => reject(error);
+    });
+
+    const previewImage = (event) => {
+        const file = event.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                ui.imgPreview.innerHTML = `<img src="${e.target.result}" alt="Preview">`;
+            }
+            reader.readAsDataURL(file);
+        }
+    };
+
+    // --- WALLET LOGIC ---
+    const updateWalletUI = async (pubkey) => {
+        if (!pubkey) {
+            ui.walletUI.classList.add('hidden');
+            ui.connectBtn.classList.remove('hidden');
+            return;
+        }
+        
+        userPubkey = pubkey.toString();
+        ui.connectBtn.classList.add('hidden');
+        ui.walletUI.classList.remove('hidden');
+        ui.walletUI.classList.add('flex');
+        
+        // Short Address
+        ui.walletAddr.innerText = userPubkey.slice(0, 4) + '...' + userPubkey.slice(-4);
+        
+        // Get Balance
+        await refreshWallet();
+    };
+
+    const refreshWallet = async () => {
+        if (!userPubkey) return;
+        try {
+            const bal = await connection.getBalance(new solanaWeb3.PublicKey(userPubkey));
+            ui.walletBal.innerText = (bal / solanaWeb3.LAMPORTS_PER_SOL).toFixed(3) + " SOL";
+        } catch (e) {
+            console.error("Balance fetch error", e);
+        }
     };
 
     const connectWallet = async () => {
         if (window.solana && window.solana.isPhantom) {
             try {
                 const resp = await window.solana.connect();
-                userPubkey = resp.publicKey.toString();
-                connectBtn.innerText = userPubkey.slice(0, 4) + '...' + userPubkey.slice(-4);
-                connectBtn.classList.add('bg-orange-900', 'text-white');
+                await updateWalletUI(resp.publicKey);
             } catch (err) { console.error(err); }
         } else {
             window.open("https://phantom.app/", "_blank");
         }
     };
 
-    connectBtn.onclick = connectWallet;
+    const disconnectWallet = async () => {
+        if (window.solana) {
+            await window.solana.disconnect();
+            userPubkey = null;
+            updateWalletUI(null);
+        }
+    };
 
-    deployBtn.onclick = async () => {
+    ui.connectBtn.onclick = connectWallet;
+
+    // --- DEPLOY LOGIC ---
+    ui.deployBtn.onclick = async () => {
         if (!userPubkey) return showStatus("CONNECT WALLET FIRST", 'error');
         
         const name = document.getElementById('name').value;
         const ticker = document.getElementById('ticker').value;
+        const fileInput = document.getElementById('image-file');
         
         if(!name || !ticker) return showStatus("NAME & TICKER REQUIRED", 'error');
 
-        deployBtn.disabled = true;
-        deployBtn.innerText = "PROCESSING...";
+        let imageBase64 = null;
+        if (fileInput.files.length > 0) {
+            try {
+                imageBase64 = await toBase64(fileInput.files[0]);
+            } catch(e) {
+                return showStatus("IMAGE PROCESSING FAILED", 'error');
+            }
+        }
+
+        ui.deployBtn.disabled = true;
+        ui.deployBtn.innerText = "PROCESSING SEQUENCE...";
         showStatus("SIGNING 0.05 SOL FEE...", 'normal');
 
         try {
-            // 1. Send Fee Transaction
+            // 1. Fee Transaction
             const tx = new solanaWeb3.Transaction().add(
                 solanaWeb3.SystemProgram.transfer({
                     fromPubkey: new solanaWeb3.PublicKey(userPubkey),
                     toPubkey: new solanaWeb3.PublicKey(DEV_WALLET_PUBKEY),
-                    lamports: 0.05 * 1000000000 // 0.05 SOL
+                    lamports: 0.05 * 1000000000 
                 })
             );
             
@@ -219,10 +368,10 @@
             tx.feePayer = new solanaWeb3.PublicKey(userPubkey);
 
             const { signature } = await window.solana.signAndSendTransaction(tx);
-            showStatus("PAYMENT SENT. DEPLOYING (WAIT ~15s)...", 'normal');
+            showStatus("PAYMENT CONFIRMED. UPLOADING METADATA...", 'normal');
 
-            // 2. Call Backend to Deploy
-            const res = await fetch(BACKEND_URL, {
+            // 2. Backend Call
+            const res = await fetch(`${BACKEND_URL}/api/deploy`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -230,6 +379,7 @@
                     description: document.getElementById('desc').value,
                     twitter: document.getElementById('twitter').value,
                     website: document.getElementById('website').value,
+                    image: imageBase64, 
                     userTx: signature,
                     userPubkey: userPubkey
                 })
@@ -242,26 +392,26 @@
                 document.getElementById('result-area').classList.remove('hidden');
                 document.getElementById('mint-addr').innerText = data.mint;
                 document.getElementById('tx-link').href = `https://solscan.io/tx/${data.signature}`;
-                deployBtn.innerText = "LAUNCHED";
+                ui.deployBtn.innerText = "LAUNCH COMPLETE";
+                refreshWallet(); // Update balance after spend
             } else {
-                throw new Error(data.error || "Unknown Server Error");
+                throw new Error(data.error || "Backend Error");
             }
 
         } catch (e) {
             console.error(e);
             showStatus("ERROR: " + e.message, 'error');
-            deployBtn.disabled = false;
-            deployBtn.innerText = "INITIATE LAUNCH";
+            ui.deployBtn.disabled = false;
+            ui.deployBtn.innerText = "INITIATE LAUNCH SEQUENCE";
         }
     };
     
-    // Auto Connect if trusted
+    // Auto Connect
     window.addEventListener('load', () => {
         if (window.solana && window.solana.isPhantom) {
-            window.solana.connect({ onlyIfTrusted: true }).then((resp) => {
-                userPubkey = resp.publicKey.toString();
-                connectBtn.innerText = userPubkey.slice(0, 4) + '...' + userPubkey.slice(-4);
-            }).catch(() => {});
+            window.solana.connect({ onlyIfTrusted: true })
+                .then((resp) => updateWalletUI(resp.publicKey))
+                .catch(() => {});
         }
     });
 </script>
