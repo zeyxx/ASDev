@@ -44,12 +44,13 @@ try {
 const wallet = new Wallet(devKeypair);
 const provider = new AnchorProvider(connection, wallet, CONNECTION_CONFIG);
 
+// Initialize Program with explicitly fixed IDL
 const idlRaw = fs.readFileSync('./pump_idl.json', 'utf8');
 const idl = JSON.parse(idlRaw);
 idl.address = PUMP_PROGRAM_ID.toString();
 const program = new Program(idl, PUMP_PROGRAM_ID, provider);
 
-// ... (Helper functions remain identical to previous responses) ...
+// --- Helper Functions ---
 async function uploadImageToPinata(base64Data) {
     try {
         const base64Content = base64Data.split(',')[1];
@@ -115,12 +116,15 @@ function getATA(mint, owner) {
     )[0];
 }
 
+// --- Routes ---
+
 app.get('/api/health', (req, res) => res.json({ status: "online", wallet: devKeypair.publicKey.toString() }));
 
 app.post('/api/deploy', async (req, res) => {
     try {
         const { name, ticker, description, twitter, website, userTx, userPubkey, image } = req.body;
         
+        // 1. Verify Payment
         const txInfo = await connection.getParsedTransaction(userTx, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
         if (!txInfo) return res.status(400).json({ error: "Transaction not found." });
         
@@ -132,8 +136,10 @@ app.post('/api/deploy', async (req, res) => {
 
         if (!validPayment) return res.status(400).json({ error: "Payment verification failed." });
 
+        // 2. Upload Metadata
         const metadataUri = await uploadMetadataToPinata(name, ticker, description, twitter, website, image);
         
+        // 3. Prepare Accounts and Instructions
         const mintKeypair = Keypair.generate();
         const mint = mintKeypair.publicKey;
         const creator = devKeypair.publicKey;
@@ -144,6 +150,7 @@ app.post('/api/deploy', async (req, res) => {
         const mayhemTokenVault = getATA(mint, solVault);
         const associatedUser = getATA(mint, creator);
 
+        // Instruction 1: Create V2
         const createIx = await program.methods.createV2(name, ticker, metadataUri, creator, false)
             .accounts({
                 mint, mintAuthority, bondingCurve, associatedBondingCurve,
@@ -154,6 +161,7 @@ app.post('/api/deploy', async (req, res) => {
             })
             .instruction();
 
+        // Instruction 2: Buy 0.01 SOL
         const buyIx = await program.methods.buyExactSolIn(new BN(0.01 * LAMPORTS_PER_SOL), new BN(1), false)
             .accounts({
                 global, feeRecipient: FEE_RECIPIENT, mint, bondingCurve, associatedBondingCurve,

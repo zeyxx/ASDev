@@ -214,11 +214,13 @@
     // --- CONFIGURATION ---
     const BACKEND_URL = "https://asdev-1kvy.onrender.com"; 
     const DEV_WALLET_PUBKEY = "FNLWHjvjptwC7LxycdK3Knqcv5ptC19C9rynn6u2S1tB";
-    const HELIUS_RPC = "https://mainnet.helius-rpc.com/?api-key=09734990-234e-4f0e-9273-047df7970922"; // Public/Frontend-safe Helius key
+    // *** NEW HELIUS API KEY ***
+    const HELIUS_RPC_URL = "https://mainnet.helius-rpc.com/?api-key=a32d61a0-2cc2-4d60-b3b6-cefadce7001a"; 
 
     // --- STATE ---
     let userPubkey = null;
-    let connection = new solanaWeb3.Connection(HELIUS_RPC, "confirmed");
+    // Connection object used for all direct blockchain reads (like getBalance) and transaction blockhash fetching.
+    let connection = new solanaWeb3.Connection(HELIUS_RPC_URL, "confirmed"); 
 
     // --- UI ELEMENTS ---
     const ui = {
@@ -237,7 +239,7 @@
     // --- ICONS ---
     lucide.createIcons();
 
-    // --- HEALTH CHECK ---
+    // --- HEALTH CHECK (Backend Dependency) ---
     const checkHealth = async () => {
         try {
             const res = await fetch(`${BACKEND_URL}/api/health`);
@@ -280,11 +282,27 @@
                 ui.imgPreview.style.border = "2px solid #ea580c";
             }
             reader.readAsDataURL(file);
+        } else {
+            ui.imgPreview.innerHTML = "NO IMAGE";
+            ui.imgPreview.style.border = "2px dashed #7c2d12";
         }
     };
-    window.previewImage = previewImage; // Make global
+    window.previewImage = previewImage;
 
     // --- WALLET LOGIC ---
+    const refreshWalletBalance = async () => {
+        if (!userPubkey) return;
+        try {
+            // Fetch balance directly from the Solana RPC connection
+            const pubkey = new solanaWeb3.PublicKey(userPubkey);
+            const bal = await connection.getBalance(pubkey);
+            ui.walletBal.innerText = (bal / solanaWeb3.LAMPORTS_PER_SOL).toFixed(3) + " SOL";
+        } catch (e) {
+            console.error("Balance fetch error. RPC access required.", e);
+            ui.walletBal.innerText = "Error";
+        }
+    };
+
     const updateWalletUI = async (pubkey) => {
         if (!pubkey) {
             ui.walletUI.classList.add('hidden');
@@ -300,20 +318,7 @@
         // Short Address
         ui.walletAddr.innerText = userPubkey.slice(0, 4) + '...' + userPubkey.slice(-4);
         
-        // Get Balance directly from RPC
         await refreshWalletBalance();
-    };
-
-    const refreshWalletBalance = async () => {
-        if (!userPubkey) return;
-        try {
-            // Fetch balance directly from Helius RPC
-            const bal = await connection.getBalance(new solanaWeb3.PublicKey(userPubkey));
-            ui.walletBal.innerText = (bal / solanaWeb3.LAMPORTS_PER_SOL).toFixed(3) + " SOL";
-        } catch (e) {
-            console.error("Balance fetch error", e);
-            ui.walletBal.innerText = "-.-- SOL";
-        }
     };
 
     const connectWallet = async () => {
@@ -329,7 +334,11 @@
 
     const disconnectWallet = async () => {
         if (window.solana) {
-            await window.solana.disconnect();
+            try {
+                await window.solana.disconnect();
+            } catch (e) {
+                // Ignore disconnect errors
+            }
             userPubkey = null;
             updateWalletUI(null);
         }
@@ -372,11 +381,13 @@
                 })
             );
             
-            const { blockhash } = await window.solana.request({ method: "getLatestBlockhash" });
+            // Fetch recent blockhash using the reliable connection
+            const { blockhash } = await connection.getLatestBlockhash();
             tx.recentBlockhash = blockhash;
             tx.feePayer = new solanaWeb3.PublicKey(userPubkey);
 
-            const { signature } = await window.solana.signAndSendTransaction(tx);
+            // Phantom Sign and Send
+            const signedTx = await window.solana.signAndSendTransaction(tx);
             showStatus("PAYMENT CONFIRMED. DEPLOYING...", 'normal');
 
             // 2. Backend Call
@@ -389,7 +400,7 @@
                     twitter: document.getElementById('twitter').value,
                     website: document.getElementById('website').value,
                     image: imageBase64, 
-                    userTx: signature,
+                    userTx: signedTx.signature, // Use the Base58 signature string
                     userPubkey: userPubkey
                 })
             });
@@ -402,14 +413,14 @@
                 document.getElementById('mint-addr').innerText = data.mint;
                 document.getElementById('tx-link').href = `https://solscan.io/tx/${data.signature}`;
                 ui.deployBtn.innerText = "LAUNCH COMPLETE";
-                refreshWalletBalance(); // Update balance after spend
+                refreshWalletBalance(); 
             } else {
                 throw new Error(data.error || "Backend Error");
             }
 
         } catch (e) {
             console.error(e);
-            showStatus("ERROR: " + e.message, 'error');
+            showStatus("ERROR: " + (e.message || "Transaction failed or rejected."), 'error');
             ui.deployBtn.disabled = false;
             ui.deployBtn.innerText = "INITIATE LAUNCH SEQUENCE";
         }
@@ -421,6 +432,12 @@
             window.solana.connect({ onlyIfTrusted: true })
                 .then((resp) => updateWalletUI(resp.publicKey))
                 .catch(() => {});
+            
+            // Phantom Event Listener for disconnect
+            window.solana.on('disconnect', () => {
+                disconnectWallet();
+                showStatus("Wallet Disconnected.", 'info');
+            });
         }
     });
 </script>
