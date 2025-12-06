@@ -14,12 +14,16 @@ const { Queue, Worker } = require('bullmq');
 const IORedis = require('ioredis');
 
 // --- Config ---
-const VERSION = "v10.5.6";
+const VERSION = "v10.5.8";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
-// CHANGE: Added .trim() to strip accidental whitespace from copy-paste
+
+// AUTH STRATEGY: Prefer JWT, fallback to Legacy Keys
 const PINATA_JWT = process.env.PINATA_JWT ? process.env.PINATA_JWT.trim() : null; 
+const PINATA_API_KEY_LEGACY = process.env.PINATA_API_KEY ? process.env.PINATA_API_KEY.trim() : null;
+const PINATA_SECRET_KEY_LEGACY = process.env.PINATA_SECRET_KEY ? process.env.PINATA_SECRET_KEY.trim() : null;
+
 const REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
 const CLARIFAI_API_KEY = process.env.CLARIFAI_API_KEY; 
 const HEADER_IMAGE_URL = process.env.HEADER_IMAGE_URL || "https://placehold.co/60x60/d97706/ffffff?text=LOGO";
@@ -45,15 +49,28 @@ const logger = {
 };
 
 // Check Critical Config
-if (!PINATA_JWT) {
-    logger.warn("⚠️ WARNING: PINATA_JWT is missing. Metadata uploads will fail.");
-} else {
-    // Validate JWT format roughly (should look like xxx.xxx.xxx)
+let usingPinataAuth = false;
+if (PINATA_JWT) {
     if (PINATA_JWT.split('.').length !== 3) {
-        logger.error("⚠️ CRITICAL: PINATA_JWT appears invalid (wrong format). Ensure you copied the 'JWT' and not the 'API Key'.");
+        logger.error("⚠️ CRITICAL: PINATA_JWT appears malformed (wrong segment count).");
     } else {
-        logger.info(`✅ Pinata JWT Loaded (Length: ${PINATA_JWT.length})`);
+        logger.info(`✅ Pinata: Using JWT Authentication (Length: ${PINATA_JWT.length})`);
+        usingPinataAuth = true;
     }
+} else if (PINATA_API_KEY_LEGACY && PINATA_SECRET_KEY_LEGACY) {
+    logger.info("✅ Pinata: Using Legacy API Key/Secret Authentication");
+    usingPinataAuth = true;
+} else {
+    logger.warn("⚠️ WARNING: No valid Pinata Credentials found (JWT or API Keys). Metadata uploads will fail.");
+}
+
+// --- RPC CONFIGURATION (Fixed 403 Error) ---
+let SOLANA_CONNECTION_URL = "https://api.mainnet-beta.solana.com"; // Default to public
+if (HELIUS_API_KEY) {
+    SOLANA_CONNECTION_URL = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
+    logger.info("✅ RPC: Using Helius High-Performance Node");
+} else {
+    logger.warn("⚠️ WARNING: HELIUS_API_KEY missing. Using Public RPC (Slower, Rate Limited).");
 }
 
 // --- CONSTANTS WITH SAFETY CHECKS ---
@@ -136,7 +153,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
-const connection = new Connection(`https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`, "confirmed");
+const connection = new Connection(SOLANA_CONNECTION_URL, "confirmed");
 const devKeypair = Keypair.fromSecretKey(bs58.decode(DEV_WALLET_PRIVATE_KEY));
 const wallet = new Wallet(devKeypair);
 const provider = new AnchorProvider(connection, wallet, { commitment: "confirmed" });
@@ -204,7 +221,33 @@ function getDeploymentPDAs(mint, creator) { const [mintAuthority] = PublicKey.fi
 function getMayhemPDAs(mint) { const [globalParams] = PublicKey.findProgramAddressSync([Buffer.from("global-params")], MAYHEM_PROGRAM_ID); const [solVault] = PublicKey.findProgramAddressSync([Buffer.from("sol-vault")], MAYHEM_PROGRAM_ID); const [mayhemState] = PublicKey.findProgramAddressSync([Buffer.from("mayhem-state"), mint.toBuffer()], MAYHEM_PROGRAM_ID); return { globalParams, solVault, mayhemState }; }
 function getATA(mint, owner) { return PublicKey.findProgramAddressSync([owner.toBuffer(), TOKEN_PROGRAM_2022_ID.toBuffer(), mint.toBuffer()], ASSOCIATED_TOKEN_PROGRAM_ID)[0]; }
 
-// --- ENHANCED PINATA FUNCTIONS ---
+// --- ENHANCED PINATA FUNCTIONS (Support JWT or Legacy Keys) ---
+function getPinataHeaders(formData) {
+    const headers = { ...formData.getHeaders() };
+    if (PINATA_JWT) {
+        headers['Authorization'] = `Bearer ${PINATA_JWT}`;
+    } else if (PINATA_API_KEY_LEGACY && PINATA_SECRET_KEY_LEGACY) {
+        headers['pinata_api_key'] = PINATA_API_KEY_LEGACY;
+        headers['pinata_secret_api_key'] = PINATA_SECRET_KEY_LEGACY;
+    } else {
+        throw new Error("Missing Pinata Credentials (JWT or API Keys)");
+    }
+    return headers;
+}
+
+function getPinataJSONHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    if (PINATA_JWT) {
+        headers['Authorization'] = `Bearer ${PINATA_JWT}`;
+    } else if (PINATA_API_KEY_LEGACY && PINATA_SECRET_KEY_LEGACY) {
+        headers['pinata_api_key'] = PINATA_API_KEY_LEGACY;
+        headers['pinata_secret_api_key'] = PINATA_SECRET_KEY_LEGACY;
+    } else {
+        throw new Error("Missing Pinata Credentials");
+    }
+    return headers;
+}
+
 async function uploadImageToPinata(b64) {
     try {
         const b = Buffer.from(b64.split(',')[1], 'base64');
@@ -212,10 +255,7 @@ async function uploadImageToPinata(b64) {
         f.append('file', b, { filename: 'i.png' });
         
         const r = await axios.post('https://api.pinata.cloud/pinning/pinFileToIPFS', f, {
-            headers: {
-                'Authorization': `Bearer ${PINATA_JWT}`, // Using cleaned JWT
-                ...f.getHeaders()
-            },
+            headers: getPinataHeaders(f),
             maxBodyLength: Infinity 
         });
         return `https://gateway.pinata.cloud/ipfs/${r.data.IpfsHash}`;
@@ -227,8 +267,6 @@ async function uploadImageToPinata(b64) {
 }
 
 async function uploadMetadataToPinata(n, s, d, t, w, i) {
-    if (!PINATA_JWT) throw new Error("Server Config Error: PINATA_JWT is missing.");
-    
     let u = "https://gateway.pinata.cloud/ipfs/QmPc5gX8W8h9j5h8x8h8h8h8h8h8h8h8h8h8h8h8h8";
     if (i) {
         u = await uploadImageToPinata(i);
@@ -247,10 +285,7 @@ async function uploadMetadataToPinata(n, s, d, t, w, i) {
 
     try {
         const r = await axios.post('https://api.pinata.cloud/pinning/pinJSONToIPFS', m, {
-            headers: {
-                'Authorization': `Bearer ${PINATA_JWT}`, // Using cleaned JWT
-                'Content-Type': 'application/json' 
-            }
+            headers: getPinataJSONHeaders()
         });
         return `https://gateway.pinata.cloud/ipfs/${r.data.IpfsHash}`;
     } catch (e) {
