@@ -46,11 +46,10 @@ const provider = new AnchorProvider(connection, wallet, CONNECTION_CONFIG);
 
 const idlRaw = fs.readFileSync('./pump_idl.json', 'utf8');
 const idl = JSON.parse(idlRaw);
-// FORCE ADDRESS
 idl.address = PUMP_PROGRAM_ID.toString();
 const program = new Program(idl, PUMP_PROGRAM_ID, provider);
 
-// ... (Helper Functions uploadImageToPinata, uploadMetadataToPinata, getPumpPDAs, getMayhemPDAs, getATA remain the same as previous step) ...
+// ... (Helper functions remain identical to previous responses) ...
 async function uploadImageToPinata(base64Data) {
     try {
         const base64Content = base64Data.split(',')[1];

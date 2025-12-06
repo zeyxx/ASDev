@@ -6,7 +6,6 @@
     <title>Protocol Launcher</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
-    <!-- Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
     <link href="https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <style>
@@ -24,7 +23,7 @@
         .font-mono { font-family: 'JetBrains Mono', monospace; }
         
         #app-container {
-            width: 100%; max-width: 900px; /* Increased Size */
+            width: 100%; max-width: 900px;
             background-color: #451a03;
             border: 6px solid #7c2d12;
             border-radius: 16px;
@@ -60,7 +59,6 @@
         }
         .input-field:focus { border-color: #ea580c; }
         
-        /* Custom File Input */
         input[type="file"]::file-selector-button {
             background: #ea580c; border: none; color: #2a1005; padding: 8px 12px;
             font-family: 'JetBrains Mono'; font-weight: bold; cursor: pointer;
@@ -118,19 +116,19 @@
             
             <!-- Wallet Panel -->
             <div class="flex flex-col items-end gap-2">
-                <div id="wallet-ui" class="hidden flex items-center gap-2 bg-orange-950 border border-orange-800 p-2 rounded">
+                <div id="wallet-ui" class="hidden flex items-center gap-2 bg-orange-950 border border-orange-800 p-2 rounded shadow-lg">
                     <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
                     <span id="wallet-addr" class="font-mono text-xs text-orange-200"></span>
-                    <span id="wallet-bal" class="font-mono text-xs text-white font-bold ml-2">0.00 SOL</span>
+                    <span id="wallet-bal" class="font-mono text-xs text-white font-bold ml-2 bg-orange-900/50 px-2 py-1 rounded">0.00 SOL</span>
                     
-                    <button onclick="refreshWallet()" title="Refresh Balance" class="ml-2 text-orange-400 hover:text-white transition">
+                    <button id="refresh-btn" title="Refresh Balance" class="ml-2 text-orange-400 hover:text-white transition p-1 hover:bg-orange-800 rounded">
                         <i data-lucide="refresh-cw" width="14"></i>
                     </button>
-                    <button onclick="disconnectWallet()" title="Disconnect" class="ml-1 text-red-400 hover:text-red-200 transition">
+                    <button id="disconnect-btn" title="Disconnect" class="ml-1 text-red-400 hover:text-red-200 transition p-1 hover:bg-red-900/30 rounded">
                         <i data-lucide="log-out" width="14"></i>
                     </button>
                 </div>
-                <button id="connect-btn" class="bg-orange-900/50 border border-orange-700 text-orange-500 px-6 py-3 rounded font-mono text-xs hover:bg-orange-900/80 transition uppercase tracking-wider font-bold">
+                <button id="connect-btn" class="bg-orange-900/50 border border-orange-700 text-orange-500 px-6 py-3 rounded font-mono text-xs hover:bg-orange-900/80 transition uppercase tracking-wider font-bold shadow-md hover:shadow-orange-900/40">
                     Connect Wallet
                 </button>
             </div>
@@ -141,9 +139,9 @@
             <!-- Left Col: Image -->
             <div class="panel col-span-1 flex flex-col items-center justify-start">
                 <h3 class="text-orange-500 font-mono text-xs mb-4 uppercase tracking-widest w-full text-left border-b border-orange-900/50 pb-2">Asset Preview</h3>
-                <div id="image-preview" class="mb-4 shadow-lg shadow-orange-900/20">NO IMAGE</div>
+                <div id="image-preview" class="mb-4 shadow-lg shadow-orange-900/20 transition-all duration-300">NO IMAGE</div>
                 <input type="file" id="image-file" class="input-field text-xs" accept="image/*" onchange="previewImage(event)">
-                <p class="text-[10px] text-orange-400 font-mono text-center">Supports PNG, JPG, GIF.<br>Max size 4MB.</p>
+                <p class="text-[10px] text-orange-400 font-mono text-center mt-2">Supports PNG, JPG, GIF.<br>Max size 4MB.</p>
             </div>
 
             <!-- Right Col: Form -->
@@ -216,10 +214,11 @@
     // --- CONFIGURATION ---
     const BACKEND_URL = "https://asdev-1kvy.onrender.com"; 
     const DEV_WALLET_PUBKEY = "FNLWHjvjptwC7LxycdK3Knqcv5ptC19C9rynn6u2S1tB";
+    const HELIUS_RPC = "https://mainnet.helius-rpc.com/?api-key=09734990-234e-4f0e-9273-047df7970922"; // Public/Frontend-safe Helius key
 
     // --- STATE ---
     let userPubkey = null;
-    let connection = new solanaWeb3.Connection("https://mainnet.helius-rpc.com/?api-key=09734990-234e-4f0e-9273-047df7970922"); // Public Helius or your own proxy if needed for balance
+    let connection = new solanaWeb3.Connection(HELIUS_RPC, "confirmed");
 
     // --- UI ELEMENTS ---
     const ui = {
@@ -227,6 +226,8 @@
         walletUI: document.getElementById('wallet-ui'),
         walletAddr: document.getElementById('wallet-addr'),
         walletBal: document.getElementById('wallet-bal'),
+        refreshBtn: document.getElementById('refresh-btn'),
+        disconnectBtn: document.getElementById('disconnect-btn'),
         deployBtn: document.getElementById('deploy-btn'),
         statusBox: document.getElementById('status-msg'),
         sysStatus: document.getElementById('sys-status'),
@@ -258,7 +259,9 @@
     const showStatus = (msg, type) => {
         ui.statusBox.innerText = msg;
         ui.statusBox.style.display = 'block';
-        ui.statusBox.className = type === 'error' ? 'status-box status-error' : (type === 'success' ? 'status-box status-success' : 'status-box');
+        if (type === 'error') ui.statusBox.className = 'status-box status-error';
+        else if (type === 'success') ui.statusBox.className = 'status-box status-success';
+        else ui.statusBox.className = 'status-box';
     };
 
     const toBase64 = file => new Promise((resolve, reject) => {
@@ -273,11 +276,13 @@
         if (file) {
             const reader = new FileReader();
             reader.onload = (e) => {
-                ui.imgPreview.innerHTML = `<img src="${e.target.result}" alt="Preview">`;
+                ui.imgPreview.innerHTML = `<img src="${e.target.result}" alt="Preview" class="rounded">`;
+                ui.imgPreview.style.border = "2px solid #ea580c";
             }
             reader.readAsDataURL(file);
         }
     };
+    window.previewImage = previewImage; // Make global
 
     // --- WALLET LOGIC ---
     const updateWalletUI = async (pubkey) => {
@@ -295,17 +300,19 @@
         // Short Address
         ui.walletAddr.innerText = userPubkey.slice(0, 4) + '...' + userPubkey.slice(-4);
         
-        // Get Balance
-        await refreshWallet();
+        // Get Balance directly from RPC
+        await refreshWalletBalance();
     };
 
-    const refreshWallet = async () => {
+    const refreshWalletBalance = async () => {
         if (!userPubkey) return;
         try {
+            // Fetch balance directly from Helius RPC
             const bal = await connection.getBalance(new solanaWeb3.PublicKey(userPubkey));
             ui.walletBal.innerText = (bal / solanaWeb3.LAMPORTS_PER_SOL).toFixed(3) + " SOL";
         } catch (e) {
             console.error("Balance fetch error", e);
+            ui.walletBal.innerText = "-.-- SOL";
         }
     };
 
@@ -329,6 +336,8 @@
     };
 
     ui.connectBtn.onclick = connectWallet;
+    ui.refreshBtn.onclick = refreshWalletBalance;
+    ui.disconnectBtn.onclick = disconnectWallet;
 
     // --- DEPLOY LOGIC ---
     ui.deployBtn.onclick = async () => {
@@ -368,7 +377,7 @@
             tx.feePayer = new solanaWeb3.PublicKey(userPubkey);
 
             const { signature } = await window.solana.signAndSendTransaction(tx);
-            showStatus("PAYMENT CONFIRMED. UPLOADING METADATA...", 'normal');
+            showStatus("PAYMENT CONFIRMED. DEPLOYING...", 'normal');
 
             // 2. Backend Call
             const res = await fetch(`${BACKEND_URL}/api/deploy`, {
@@ -393,7 +402,7 @@
                 document.getElementById('mint-addr').innerText = data.mint;
                 document.getElementById('tx-link').href = `https://solscan.io/tx/${data.signature}`;
                 ui.deployBtn.innerText = "LAUNCH COMPLETE";
-                refreshWallet(); // Update balance after spend
+                refreshWalletBalance(); // Update balance after spend
             } else {
                 throw new Error(data.error || "Backend Error");
             }
