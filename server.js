@@ -14,7 +14,7 @@ const { Queue, Worker } = require('bullmq');
 const IORedis = require('ioredis');
 
 // --- Config ---
-const VERSION = "v10.9.4-FIX-ATA-INIT";
+const VERSION = "v10.9.5-FIX-VOL-TRACK";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -243,9 +243,11 @@ if (redisConnection) {
             
             // Manual buy_exact_sol_in
             const buyDiscriminator = Buffer.from([56, 252, 116, 8, 158, 223, 205, 95]);
-            const amountBuf = new BN(0.01 * LAMPORTS_PER_SOL).toArrayLike(Buffer, 'le', 8);
+            const amountBuf = new BN(Math.floor(0.01 * LAMPORTS_PER_SOL)).toArrayLike(Buffer, 'le', 8);
             const minSolBuf = new BN(1).toArrayLike(Buffer, 'le', 8);
-            const trackVolumeBuf = Buffer.from([1, 0]); 
+            // [FIXED] Set trackVolume to 0 (false) to avoid 3012 error on uninitialized accumulator
+            // [FIXED] Using 1 byte for bool
+            const trackVolumeBuf = Buffer.from([0]); 
             
             const buyData = Buffer.concat([buyDiscriminator, amountBuf, minSolBuf, trackVolumeBuf]);
 
