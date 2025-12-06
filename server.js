@@ -200,10 +200,8 @@ if (redisConnection) {
 
             // Mayhem PDAs
             let mayhemState, mayhemTokenVault;
-            if (isMayhemMode) {
-                [mayhemState] = PublicKey.findProgramAddressSync([Buffer.from("mayhem-state"), mint.toBuffer()], MAYHEM_PROGRAM_ID);
-                mayhemTokenVault = getATA(mint, SOL_VAULT, TOKEN_PROGRAM_2022_ID);
-            }
+            [mayhemState] = PublicKey.findProgramAddressSync([Buffer.from("mayhem-state"), mint.toBuffer()], MAYHEM_PROGRAM_ID);
+            mayhemTokenVault = getATA(mint, SOL_VAULT, TOKEN_PROGRAM_2022_ID);
 
             // --- MANUAL create_v2 INSTRUCTION ---
             const discriminator = Buffer.from([214, 144, 76, 236, 95, 139, 49, 180]); // create_v2
