@@ -14,7 +14,7 @@ const { Queue, Worker } = require('bullmq');
 const IORedis = require('ioredis');
 
 // --- Config ---
-const VERSION = "v10.5.24";
+const VERSION = "v10.5.25";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -90,8 +90,12 @@ const PUMP_LIQUIDITY_WALLET = "CJXSGQnTeRRGbZE1V4rQjYDeKLExPnxceczmAbgBdTsa";
 const FEE_THRESHOLD_SOL = 0.20;
 
 const PUMP_PROGRAM_ID = safePublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "11111111111111111111111111111111", "PUMP_PROGRAM_ID");
+
+// CHANGED: Reverted to Standard Token Program (Tokenkeg...) based on successful TX analysis
 const TOKEN_PROGRAM_ID = safePublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TOKEN_PROGRAM_ID");
+
 const ASSOCIATED_TOKEN_PROGRAM_ID = safePublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", "11111111111111111111111111111111", "ASSOCIATED_TOKEN_PROGRAM_ID");
+const FEE_PROGRAM_ID = safePublicKey("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ", "11111111111111111111111111111111", "FEE_PROGRAM_ID");
 const FEE_RECIPIENT = safePublicKey("CebN5WGQ4vvepcovs24O1bJIRfD567TE81P9j2k8qB8", "11111111111111111111111111111111", "FEE_RECIPIENT"); 
 
 const MAYHEM_PROGRAM_ID = safePublicKey("MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e", "11111111111111111111111111111111", "MAYHEM_PROGRAM_ID");
@@ -156,7 +160,6 @@ const connection = new Connection(SOLANA_CONNECTION_URL, "confirmed");
 const devKeypair = Keypair.fromSecretKey(bs58.decode(DEV_WALLET_PRIVATE_KEY));
 const wallet = new Wallet(devKeypair);
 const provider = new AnchorProvider(connection, wallet, { commitment: "confirmed" });
-// Using the uploaded IDL content directly
 const idlRaw = fs.readFileSync('./pump_idl.json', 'utf8');
 const idl = JSON.parse(idlRaw);
 idl.address = PUMP_PROGRAM_ID.toString();
@@ -212,28 +215,29 @@ if (redisConnection) {
             const mint = mintKeypair.publicKey;
             const creator = devKeypair.publicKey;
 
-            // --- PDA Derivations (Matching the uploaded IDL) ---
+            // --- PDA Derivations ---
             const [mintAuthority] = PublicKey.findProgramAddressSync([Buffer.from("mint-authority")], PUMP_PROGRAM_ID);
             const [bondingCurve] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), mint.toBuffer()], PUMP_PROGRAM_ID);
-            const associatedBondingCurve = getATA(mint, bondingCurve); // ATA for the bonding curve (Token Account)
+            const associatedBondingCurve = getATA(mint, bondingCurve); // ATA for bonding curve
             const [global] = PublicKey.findProgramAddressSync([Buffer.from("global")], PUMP_PROGRAM_ID);
-            const [mplTokenMetadata] = PublicKey.findProgramAddressSync([Buffer.from("metadata"), new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s").toBuffer(), mint.toBuffer()], new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")); // Metadata PDA
+            const [mplTokenMetadata] = PublicKey.findProgramAddressSync([Buffer.from("metadata"), new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s").toBuffer(), mint.toBuffer()], new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")); 
             const [metadata] = PublicKey.findProgramAddressSync([Buffer.from("metadata"), new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s").toBuffer(), mint.toBuffer()], new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"));
             const [eventAuthority] = PublicKey.findProgramAddressSync([Buffer.from("__event_authority")], PUMP_PROGRAM_ID);
 
-            // --- INSTRUCTION 1: Create V2 (Matches IDL: create_v2) ---
-            const createIx = await program.methods.createV2(name, ticker, metadataUri) 
+            // --- INSTRUCTION 1: Create (Standard Pump) ---
+            // FIXED: Using standard 'create' instruction for SPL Token (not v2)
+            const createIx = await program.methods.create(name, ticker, metadataUri) 
                 .accounts({
                     mint: mint,
                     mintAuthority: mintAuthority,
                     bondingCurve: bondingCurve,
                     associatedBondingCurve: associatedBondingCurve,
                     global: global,
-                    mplTokenMetadata: new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"), // Metaplex Program
+                    mplTokenMetadata: new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"), 
                     metadata: metadata,
                     user: creator,
                     systemProgram: SystemProgram.programId,
-                    tokenProgram: TOKEN_PROGRAM_ID,
+                    tokenProgram: TOKEN_PROGRAM_ID, // STANDARD TOKEN PROGRAM
                     associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID,
                     rent: new PublicKey("SysvarRent111111111111111111111111111111111"),
                     eventAuthority: eventAuthority,
@@ -241,7 +245,7 @@ if (redisConnection) {
                 })
                 .instruction();
 
-            // --- INSTRUCTION 2: Buy Initial Supply (Optional but requested) ---
+            // --- INSTRUCTION 2: Buy Initial Supply ---
             const associatedUser = getATA(mint, creator);
             const targetFeeRecipient = isMayhemMode ? MAYHEM_FEE_RECIPIENT : FEE_RECIPIENT;
 
@@ -255,7 +259,7 @@ if (redisConnection) {
                     associatedUser: associatedUser,
                     user: creator,
                     systemProgram: SystemProgram.programId,
-                    tokenProgram: TOKEN_PROGRAM_ID,
+                    tokenProgram: TOKEN_PROGRAM_ID, // STANDARD TOKEN PROGRAM
                     rent: new PublicKey("SysvarRent111111111111111111111111111111111"),
                     eventAuthority: eventAuthority,
                     program: PUMP_PROGRAM_ID
