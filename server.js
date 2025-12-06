@@ -13,19 +13,14 @@ const FormData = require('form-data');
 const { Queue, Worker } = require('bullmq');
 const IORedis = require('ioredis');
 
-// --- Moderation Deps ---
-const tf = require('@tensorflow/tfjs-node');
-const nsfw = require('nsfwjs');
-const jpeg = require('jpeg-js');
-const png = require('pngjs').PNG;
-
 // --- Config ---
-const VERSION = "v10.3.2";
+const VERSION = "v10.4.1";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
 const PINATA_JWT = process.env.PINATA_JWT;
 const REDIS_URL = process.env.REDIS_URL || 'redis://127.0.0.1:6379';
+const CLARIFAI_API_KEY = process.env.CLARIFAI_API_KEY; 
 const HEADER_IMAGE_URL = process.env.HEADER_IMAGE_URL || "https://placehold.co/60x60/d97706/ffffff?text=LOGO";
 
 const TARGET_PUMP_TOKEN = new PublicKey("pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn");
@@ -70,11 +65,7 @@ const logger = {
 let deployQueue;
 let redisConnection;
 try {
-    redisConnection = new IORedis(REDIS_URL, {
-        maxRetriesPerRequest: null,
-        enableReadyCheck: false,
-        retryStrategy: (times) => Math.min(times * 50, 2000)
-    });
+    redisConnection = new IORedis(REDIS_URL, { maxRetriesPerRequest: null, enableReadyCheck: false });
     redisConnection.on('error', (err) => logger.error("Redis Connection Error", { msg: err.message }));
     deployQueue = new Queue('deployQueue', { connection: redisConnection });
     logger.info("✅ Redis Queue Initialized");
@@ -97,62 +88,53 @@ async function initDB() {
     logger.info(`DB Initialized at ${DB_PATH}`);
 }
 
-// --- MODERATION SETUP (RESILIENT) ---
-let _model = null;
-async function loadModel() {
-    if (_model) return _model;
-    logger.info("🛡️ Attempting to load NSFWJS Model...");
-    try {
-        // Attempt to load from default hosted model
-        // If this fails (e.g. firewall), we catch the error and disable moderation gracefully
-        _model = await nsfw.load(); 
-        logger.info("🛡️ NSFWJS Model Loaded Successfully.");
-        return _model;
-    } catch(e) {
-        logger.error("⚠️ Failed to load NSFW Model (Moderation Disabled)", { err: e.message });
-        return null; 
-    }
-}
-async function imageToTensor(buffer, mimeType) {
-    let pixels;
-    if (mimeType === 'image/jpeg' || mimeType === 'image/jpg') pixels = jpeg.decode(buffer, true);
-    else if (mimeType === 'image/png') pixels = png.sync.read(buffer);
-    else throw new Error("Unsupported image type");
-    const numChannels = 3; const numPixels = pixels.width * pixels.height; const values = new Int32Array(numPixels * numChannels);
-    for (let i = 0; i < numPixels; i++) { for (let c = 0; c < numChannels; c++) { values[i * numChannels + c] = pixels.data[i * 4 + c]; } }
-    return tf.tensor3d(values, [pixels.height, pixels.width, numChannels], 'int32');
-}
+// --- MODERATION (CLARIFAI - RELAXED RULES) ---
 async function checkContentSafety(base64Data) {
-    try {
-        const model = await loadModel();
-        if (!model) {
-            // FAIL OPEN: If model failed to load, allow upload but log warning
-            return true; 
-        }
-        
-        const matches = base64Data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-        if (!matches || matches.length !== 3) return false; 
-        const mimeType = matches[1]; const buffer = Buffer.from(matches[2], 'base64');
-        if (!['image/png', 'image/jpeg', 'image/jpg'].includes(mimeType)) return false;
+    if (!CLARIFAI_API_KEY) {
+        logger.warn("⚠️ CLARIFAI_API_KEY missing. Moderation Skipped.");
+        return true; 
+    }
 
-        const image = await imageToTensor(buffer, mimeType);
-        const predictions = await model.classify(image);
-        image.dispose(); 
+    try {
+        const base64Content = base64Data.split(',')[1];
         
-        const unsafe = predictions.find(p => (p.className === 'Porn' || p.className === 'Hentai') && p.probability > 0.85);
-        if (unsafe) { 
-            logger.warn(`🚫 Blocked unsafe content: ${unsafe.className}`); 
-            return false; 
+        const response = await axios.post(
+            "https://api.clarifai.com/v2/models/moderation-recognition/outputs",
+            {
+                inputs: [{ data: { image: { base64: base64Content } } }]
+            },
+            {
+                headers: {
+                    "Authorization": `Key ${CLARIFAI_API_KEY}`,
+                    "Content-Type": "application/json"
+                }
+            }
+        );
+
+        const concepts = response.data.outputs[0].data.concepts;
+        
+        // RELAXED FILTER: Only block extreme categories.
+        // Removed 'suggestive' to allow mild content.
+        // 'explicit' = Nudity/Porn
+        // 'gore' = Violence
+        // 'drug' = Illegal drugs
+        const unsafe = concepts.find(c => 
+            (c.name === 'gore' || c.name === 'explicit' || c.name === 'drug') && c.value > 0.85
+        );
+
+        if (unsafe) {
+            logger.warn(`🚫 Blocked unsafe content: ${unsafe.name} (${(unsafe.value*100).toFixed(2)}%)`);
+            return false;
         }
         return true;
-    } catch (e) { 
-        logger.error("Moderation Scan Error (Allowing Upload)", {err:e.message}); 
-        return true; // Fail open on technical error
+
+    } catch (e) {
+        logger.error("Moderation API Error", { err: e.message });
+        return true; // Fail open
     }
 }
 
 initDB();
-loadModel(); // Trigger load on startup
 
 const app = express();
 app.use(cors());
@@ -167,7 +149,7 @@ const idl = JSON.parse(idlRaw);
 idl.address = PUMP_PROGRAM_ID.toString();
 const program = new Program(idl, PUMP_PROGRAM_ID, provider);
 
-// --- Helpers ---
+// --- Helpers (Standard) ---
 async function sendTxWithRetry(tx, signers, retries = 5) {
     for (let i = 0; i < retries; i++) {
         try {
@@ -175,10 +157,7 @@ async function sendTxWithRetry(tx, signers, retries = 5) {
             tx.recentBlockhash = blockhash; tx.lastValidBlockHeight = lastValidBlockHeight;
             const sig = await sendAndConfirmTransaction(connection, tx, signers, { commitment: 'confirmed', skipPreflight: true });
             return sig;
-        } catch (err) {
-            if (i === retries - 1) throw err;
-            await new Promise(r => setTimeout(r, 2000 * Math.pow(1.5, i)));
-        }
+        } catch (err) { if (i === retries - 1) throw err; await new Promise(r => setTimeout(r, 2000)); }
     }
 }
 async function addFees(amt) { if(db) { await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [amt, 'accumulatedFeesLamports']); await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [amt, 'lifetimeFeesLamports']); }}
@@ -192,23 +171,20 @@ async function saveTokenData(pk, mint, meta) { try { await db.run(`INSERT INTO t
 async function checkTransactionUsed(sig) { const res = await db.get('SELECT signature FROM transactions WHERE signature = ?', sig); return !!res; }
 async function markTransactionUsed(sig, pk) { await db.run('INSERT INTO transactions (signature, userPubkey) VALUES (?, ?)', [sig, pk]); }
 
-// --- WORKER DEFINITION (If Redis available) ---
+// --- WORKER ---
 let worker;
 if (redisConnection) {
     worker = new Worker('deployQueue', async (job) => {
         logger.info(`Processing Job ${job.id}: ${job.data.ticker}`);
         const { name, ticker, description, twitter, website, image, userPubkey, isMayhemMode } = job.data;
 
-        // 1. Moderation (Fail Open if Model Broken)
         const isSafe = await checkContentSafety(image);
-        if (!isSafe) throw new Error("Upload blocked: NSFW/Illegal content detected.");
+        if (!isSafe) throw new Error("Upload blocked: Illegal content detected.");
 
-        // 2. Upload
         let metadataUri;
         try { metadataUri = await uploadMetadataToPinata(name, ticker, description, twitter, website, image); }
         catch(e) { throw new Error("Metadata upload failed"); }
 
-        // 3. Tx
         const mintKeypair = Keypair.generate();
         const mint = mintKeypair.publicKey;
         const creator = devKeypair.publicKey;
@@ -252,7 +228,7 @@ function getATA(mint, owner) { return PublicKey.findProgramAddressSync([owner.to
 async function uploadImageToPinata(b64) { try { const b=Buffer.from(b64.split(',')[1],'base64'); const f=new FormData(); f.append('file',b,{filename:'i.png'}); const r=await axios.post('https://api.pinata.cloud/pinning/pinFileToIPFS',f,{headers:{'Authorization':`Bearer ${PINATA_JWT}`,...f.getHeaders()}}); return `https://gateway.pinata.cloud/ipfs/${r.data.IpfsHash}`; } catch(e){ return "https://gateway.pinata.cloud/ipfs/QmPc5gX8W8h9j5h8x8h8h8h8h8h8h8h8h8h8h8h8h8"; } }
 async function uploadMetadataToPinata(n,s,d,t,w,i) { let u="https://gateway.pinata.cloud/ipfs/QmPc5gX8W8h9j5h8x8h8h8h8h8h8h8h8h8h8h8h8h8"; if(i) u=await uploadImageToPinata(i); const m={name:n,symbol:s,description:d,image:u,extensions:{twitter:t,website:w}}; try { const r=await axios.post('https://api.pinata.cloud/pinning/pinJSONToIPFS',m,{headers:{'Authorization':`Bearer ${PINATA_JWT}`}}); return `https://gateway.pinata.cloud/ipfs/${r.data.IpfsHash}`; } catch(e) { throw new Error("Failed to upload metadata"); } }
 
-// --- Routes (Same as before) ---
+// --- Routes ---
 app.get('/api/version', (req, res) => res.json({ version: VERSION }));
 app.get('/api/health', async (req, res) => { try { const stats = await getStats(); const launches = await getTotalLaunches(); const logs = await db.all('SELECT * FROM logs ORDER BY id DESC LIMIT 50'); res.json({ status: "online", wallet: devKeypair.publicKey.toString(), lifetimeFees: (stats.lifetimeFeesLamports / LAMPORTS_PER_SOL).toFixed(4), totalPumpBought: (stats.totalPumpBoughtLamports / LAMPORTS_PER_SOL).toFixed(4), totalLaunches: launches, recentLogs: logs.map(l => ({ ...JSON.parse(l.data), type: l.type, timestamp: l.timestamp })), headerImageUrl: HEADER_IMAGE_URL }); } catch (e) { res.status(500).json({ error: "DB Error" }); } });
 app.get('/api/check-holder', async (req, res) => { const { userPubkey } = req.query; if (!userPubkey) return res.json({ isHolder: false }); try { const result = await db.get('SELECT mint, rank FROM token_holders WHERE holderPubkey = ? LIMIT 1', userPubkey); res.json({ isHolder: !!result, ...(result || {}) }); } catch (e) { res.status(500).json({ error: "DB Error" }); } });
@@ -266,10 +242,7 @@ app.post('/api/deploy', async (req, res) => {
         const { name, ticker, description, twitter, website, userTx, userPubkey, image, isMayhemMode } = req.body;
         if (!name || name.length > 32) return res.status(400).json({ error: "Invalid Name" });
         if (!ticker || ticker.length > 10) return res.status(400).json({ error: "Invalid Ticker" });
-
-        const used = await checkTransactionUsed(userTx);
-        if (used) return res.status(400).json({ error: "Transaction signature already used." });
-
+        const used = await checkTransactionUsed(userTx); if (used) return res.status(400).json({ error: "Transaction signature already used." });
         const txInfo = await connection.getParsedTransaction(userTx, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
         if (!txInfo) return res.status(400).json({ error: "Transaction not found." });
         const validPayment = txInfo.transaction.message.instructions.some(ix => { if (ix.programId.toString() !== '11111111111111111111111111111111') return false; if (ix.parsed.type !== 'transfer') return false; return ix.parsed.info.destination === devKeypair.publicKey.toString() && ix.parsed.info.lamports >= 0.05 * LAMPORTS_PER_SOL; });
