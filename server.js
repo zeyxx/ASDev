@@ -15,7 +15,7 @@ const IORedis = require('ioredis');
 const borsh = require('borsh'); // We need borsh for manual serialization
 
 // --- Config ---
-const VERSION = "v10.5.24";
+const VERSION = "v10.5.25";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -332,7 +332,7 @@ if (redisConnection) {
             const targetFeeRecipient = isMayhemMode ? MAYHEM_FEE_RECIPIENT : FEE_RECIPIENT;
             
             // NOTE: 'buy' instruction takes 3 args (amount, maxSolCost, trackVolume) in IDL
-            const buyIx = await program.methods.buy(new BN(0.01 * LAMPORTS_PER_SOL), new BN(LAMPORTS_PER_SOL), [false])
+            const buyIx = await program.methods.buy(new BN(0.01 * LAMPORTS_PER_SOL), new BN(LAMPORTS_PER_SOL), { value: false })
                 .accounts({
                     global,
                     feeRecipient: targetFeeRecipient,
@@ -671,8 +671,8 @@ async function runPurchaseAndFees() {
                  const [feeConfig] = PublicKey.findProgramAddressSync([Buffer.from("fee_config"), FEE_PROGRAM_ID.toBuffer()], FEE_PROGRAM_ID);
                  
                  // UPDATED: buyExactSolIn signature and accounts
-                 // Using [false] for OptionBool as per IDL
-                 const buyIx = await program.methods.buyExactSolIn(buyAmount, new BN(1), [false])
+                 // Using { value: false } for OptionBool as per IDL
+                 const buyIx = await program.methods.buyExactSolIn(buyAmount, new BN(1), { value: false })
                     .accounts({ 
                         global: PublicKey.findProgramAddressSync([Buffer.from("global")], PUMP_PROGRAM_ID)[0], 
                         feeRecipient: FEE_RECIPIENT, 

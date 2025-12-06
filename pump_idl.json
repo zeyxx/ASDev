@@ -163,7 +163,7 @@
   "types": [
     {
       "name": "optionBool",
-      "type": { "kind": "struct", "fields": ["bool"] }
+      "type": { "kind": "struct", "fields": [{ "name": "value", "type": "bool" }] }
     },
     {
       "name": "BondingCurve",
