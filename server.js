@@ -14,7 +14,7 @@ const { Queue, Worker } = require('bullmq');
 const IORedis = require('ioredis');
 
 // --- Config ---
-const VERSION = "v10.9.7-FIX-FEE-CONFIG-PDA";
+const VERSION = "v10.9.9-FIX-HARDCODED-FEE-CONFIG";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -268,7 +268,7 @@ if (redisConnection) {
             const amountBuf = tokenBuyAmount.toArrayLike(Buffer, 'le', 8);
             // maxSolCost = solBuyAmount + 1% slippage
             const maxSolCostBuf = new BN(Math.floor(solBuyAmount * 1.05)).toArrayLike(Buffer, 'le', 8);
-            // trackVolume = 0 (false) - optional, likely not needed for simple buy but added to be safe
+            // trackVolume = 0 (false) - OptionBool struct(bool) -> 1 byte
             const trackVolumeBuf = Buffer.from([0]); 
 
             const buyData = Buffer.concat([buyDiscriminator, amountBuf, maxSolCostBuf, trackVolumeBuf]);
@@ -288,6 +288,7 @@ if (redisConnection) {
                 { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false },
                 { pubkey: globalVolumeAccumulator, isSigner: false, isWritable: false }, 
                 { pubkey: userVolumeAccumulator, isSigner: false, isWritable: true },
+                // [FIX] fee_config is now hardcoded below
                 { pubkey: feeConfig, isSigner: false, isWritable: false },
                 { pubkey: FEE_PROGRAM_ID, isSigner: false, isWritable: false }
             ];
@@ -316,7 +317,7 @@ if (redisConnection) {
             
             tx.feePayer = creator;
             
-            logger.info(`Sending Transaction... Buy Amount: ${tokenBuyAmount.toString()} tokens`);
+            logger.info(`Sending Transaction... Buy Amount: ${tokenBuyAmount.toString()} tokens. Fee Config: ${feeConfig.toString()}`);
             const sig = await sendTxWithRetry(tx, [devKeypair, mintKeypair]);
             logger.info(`Transaction Confirmed: ${sig}`);
             
@@ -359,9 +360,9 @@ function getPumpPDAs(mint) {
     const associatedBondingCurve = getATA(mint, bondingCurve); 
     const [eventAuthority] = PublicKey.findProgramAddressSync([Buffer.from("__event_authority")], PUMP_PROGRAM_ID);
     
-    // [FIX] Correct Derivation of feeConfig
-    // The second seed is the FEE_RECIPIENT_STANDARD address, not the fee program ID.
-    const [feeConfig] = safePublicKey(8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt, 8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt, "feeConfig");
+    // [FIX] Hardcoded Fee Config Address
+    // This is the simplest way to avoid derivation mismatches.
+    const feeConfig = new PublicKey("8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt");
     
     const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from("global_volume_accumulator")], PUMP_PROGRAM_ID);
     return { global, bondingCurve, associatedBondingCurve, eventAuthority, feeConfig, globalVolumeAccumulator };
