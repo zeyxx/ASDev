@@ -15,7 +15,7 @@ const IORedis = require('ioredis');
 const borsh = require('borsh'); // We need borsh for manual serialization
 
 // --- Config ---
-const VERSION = "v10.5.35";
+const VERSION = "v10.5.36"; // Bumped version for tracking
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -161,11 +161,18 @@ const connection = new Connection(SOLANA_CONNECTION_URL, "confirmed");
 const devKeypair = Keypair.fromSecretKey(bs58.decode(DEV_WALLET_PRIVATE_KEY));
 const wallet = new Wallet(devKeypair);
 const provider = new AnchorProvider(connection, wallet, { commitment: "confirmed" });
+
 // Using the IDL for Buy instruction only, creating V2 manually below
-const idlRaw = fs.readFileSync('./pump_idl.json', 'utf8');
-const idl = JSON.parse(idlRaw);
-idl.address = PUMP_PROGRAM_ID.toString();
-const program = new Program(idl, PUMP_PROGRAM_ID, provider);
+// We ensure we read the IDL safely
+let program;
+try {
+    const idlRaw = fs.readFileSync('./pump_idl.json', 'utf8');
+    const idl = JSON.parse(idlRaw);
+    idl.address = PUMP_PROGRAM_ID.toString();
+    program = new Program(idl, PUMP_PROGRAM_ID, provider);
+} catch (e) {
+    logger.error("Failed to load pump_idl.json", { error: e.message });
+}
 
 // --- Helpers ---
 async function sendTxWithRetry(tx, signers, retries = 5) {
@@ -206,17 +213,7 @@ async function saveTokenData(pk, mint, meta) {
         await db.run(
             `INSERT INTO tokens (mint, userPubkey, name, ticker, description, twitter, website, image, isMayhemMode)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                mint,
-                pk,
-                meta.name,
-                meta.ticker,
-                meta.description,
-                meta.twitter,
-                meta.website,
-                meta.image,        // <- FIXED
-                meta.isMayhemMode,
-            ]
+            [mint, pk, meta.name, meta.ticker, meta.description, meta.twitter, meta.website, meta.image, meta.isMayhemMode]
         );
 
         const shard = pk.slice(0, 2).toLowerCase();
@@ -225,16 +222,7 @@ async function saveTokenData(pk, mint, meta) {
 
         fs.writeFileSync(
             path.join(dir, `${mint}.json`),
-            JSON.stringify(
-                {
-                    userPubkey: pk,
-                    mint,
-                    metadata: meta,
-                    timestamp: new Date().toISOString(),
-                },
-                null,
-                2
-            )
+            JSON.stringify({ userPubkey: pk, mint, metadata: meta, timestamp: new Date().toISOString() }, null, 2)
         );
     } catch (e) {
         logger.error("Save Token Error", { err: e.message });
@@ -256,11 +244,17 @@ if (redisConnection) {
             const mint = mintKeypair.publicKey;
             const creator = devKeypair.publicKey;
 
-            // --- PDA Derivations ---
+            // --- PDA Derivations using Helper ---
+            const { 
+                global, 
+                bondingCurve, 
+                associatedBondingCurve, 
+                eventAuthority, 
+                feeConfig, 
+                globalVolumeAccumulator 
+            } = getPumpPDAs(mint);
+
             const [mintAuthority] = PublicKey.findProgramAddressSync([Buffer.from("mint-authority")], PUMP_PROGRAM_ID);
-            const [bondingCurve] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), mint.toBuffer()], PUMP_PROGRAM_ID);
-            const associatedBondingCurve = getATA(mint, bondingCurve, TOKEN_PROGRAM_2022_ID); // V2 uses Token2022
-            const [global] = PublicKey.findProgramAddressSync([Buffer.from("global")], PUMP_PROGRAM_ID);
             
             // Mayhem PDAs
             const [globalParams] = PublicKey.findProgramAddressSync([Buffer.from("global-params")], MAYHEM_PROGRAM_ID);
@@ -268,19 +262,8 @@ if (redisConnection) {
             const [mayhemState] = PublicKey.findProgramAddressSync([Buffer.from("mayhem-state"), mint.toBuffer()], MAYHEM_PROGRAM_ID);
             const mayhemTokenVault = getATA(mint, solVault, TOKEN_PROGRAM_2022_ID);
 
-            const [eventAuthority] = PublicKey.findProgramAddressSync([Buffer.from("__event_authority")], PUMP_PROGRAM_ID);
-
-            // Manual Creator Vault Derivations (New Requirement)
-            const [creatorVault] = PublicKey.findProgramAddressSync(
-                [Buffer.from("creator-vault"), creator.toBuffer()],
-                PUMP_PROGRAM_ID
-            );
-
-            // Fee Config Derivation
-            const [feeConfig] = PublicKey.findProgramAddressSync([Buffer.from("fee_config"), FEE_PROGRAM_ID.toBuffer()], FEE_PROGRAM_ID);
-
-            // Volume Accumulators
-            const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from("global_volume_accumulator")], PUMP_PROGRAM_ID);
+            // Manual Creator Vault Derivations
+            const [creatorVault] = PublicKey.findProgramAddressSync([Buffer.from("creator-vault"), creator.toBuffer()], PUMP_PROGRAM_ID);
             const [userVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from("user_volume_accumulator"), creator.toBuffer()], PUMP_PROGRAM_ID);
 
             // --- MANUAL INSTRUCTION CONSTRUCTION FOR create_v2 ---
@@ -329,11 +312,8 @@ if (redisConnection) {
 
             // --- INSTRUCTION 2: Buy Initial Supply (Pre-Bond) ---
             const associatedUser = getATA(mint, creator, TOKEN_PROGRAM_2022_ID);
-            // The fee recipient is the launcher's designated account for collecting fees (FEE_RECIPIENT or MAYHEM_FEE_RECIPIENT)
             const targetFeeRecipient = isMayhemMode ? MAYHEM_FEE_RECIPIENT : FEE_RECIPIENT;
             
-            // Using buy instruction for pre-bond/initial liquidity injection.
-            // Argument for trackVolume: We use [false] for the Option<bool> type.
             const buyIx = await program.methods.buy(new BN(0.01 * LAMPORTS_PER_SOL), new BN(LAMPORTS_PER_SOL), [false])
                 .accounts({
                     global,
@@ -363,7 +343,7 @@ if (redisConnection) {
 
             setTimeout(async () => { try { 
                 const bal = await connection.getTokenAccountBalance(associatedUser); 
-                if (bal.value && bal.value.uiAmount > 0) { // Added null check for bal.value
+                if (bal.value && bal.value.uiAmount > 0) { 
                     const sellIx = await program.methods.sell(new BN(bal.value.amount), new BN(0))
                         .accounts({ 
                             global, 
@@ -402,6 +382,18 @@ if (redisConnection) {
 
 // --- PDAs/Uploads ---
 function getATA(mint, owner, tokenProgramId = TOKEN_PROGRAM_2022_ID) { return PublicKey.findProgramAddressSync([owner.toBuffer(), tokenProgramId.toBuffer(), mint.toBuffer()], ASSOCIATED_TOKEN_PROGRAM_ID)[0]; }
+
+// --- THE MISSING HELPER FUNCTION ---
+function getPumpPDAs(mint) {
+    const [global] = PublicKey.findProgramAddressSync([Buffer.from("global")], PUMP_PROGRAM_ID);
+    const [bondingCurve] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), mint.toBuffer()], PUMP_PROGRAM_ID);
+    const associatedBondingCurve = getATA(mint, bondingCurve, TOKEN_PROGRAM_2022_ID);
+    const [eventAuthority] = PublicKey.findProgramAddressSync([Buffer.from("__event_authority")], PUMP_PROGRAM_ID);
+    const [feeConfig] = PublicKey.findProgramAddressSync([Buffer.from("fee_config"), FEE_PROGRAM_ID.toBuffer()], FEE_PROGRAM_ID);
+    const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from("global_volume_accumulator")], PUMP_PROGRAM_ID);
+    
+    return { global, bondingCurve, associatedBondingCurve, eventAuthority, feeConfig, globalVolumeAccumulator };
+}
 
 function getPinataHeaders(formData) {
     const headers = { ...formData.getHeaders() };
@@ -557,23 +549,20 @@ app.post('/api/deploy', async (req, res) => {
             throw dbErr;
         }
 
-        // NEW: Retry Loop for Transaction Verification
+        // Retry Loop for Transaction Verification
         let txInfo = null;
         let validPayment = false;
         
-        // Try up to 15 times (approx 30 seconds)
         for (let i = 0; i < 15; i++) {
             txInfo = await connection.getParsedTransaction(userTx, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
             if (txInfo) {
-                // Check if payment is valid inside the loop
                 validPayment = txInfo.transaction.message.instructions.some(ix => { 
                     if (ix.programId.toString() !== '11111111111111111111111111111111') return false; 
                     if (ix.parsed.type !== 'transfer') return false; 
                     return ix.parsed.info.destination === devKeypair.publicKey.toString() && ix.parsed.info.lamports >= 0.05 * LAMPORTS_PER_SOL; 
                 });
-                break; // Found it, stop looping
+                break;
             }
-            // Wait 2 seconds before retrying
             await new Promise(resolve => setTimeout(resolve, 2000));
         }
 
@@ -654,26 +643,27 @@ async function runPurchaseAndFees() {
                  const transfer9_5 = Math.floor(spendable * 0.095); 
                  const transfer0_5 = Math.floor(spendable * 0.005); 
                  
-                 // Get Accounts
-                 const [bondingCurve] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), TARGET_PUMP_TOKEN.toBuffer()], PUMP_PROGRAM_ID);
-                 const associatedBondingCurve = getATA(TARGET_PUMP_TOKEN, bondingCurve, TOKEN_PROGRAM_2022_ID);
-                 const associatedUser = getATA(TARGET_PUMP_TOKEN, devKeypair.publicKey, TOKEN_PROGRAM_2022_ID);
-                 
+                 // --- Use Helper for PDAs ---
+                 const { 
+                     global, 
+                     bondingCurve, 
+                     associatedBondingCurve, 
+                     eventAuthority, 
+                     feeConfig, 
+                     globalVolumeAccumulator 
+                 } = getPumpPDAs(TARGET_PUMP_TOKEN);
+
                  // Fetch Bonding Curve to get creator (needed for seeds)
                  const bondingCurveAccount = await program.account.bondingCurve.fetch(bondingCurve);
                  const coinCreator = bondingCurveAccount.creator;
 
                  const [creatorVault] = PublicKey.findProgramAddressSync([Buffer.from("creator-vault"), coinCreator.toBuffer()], PUMP_PROGRAM_ID);
-                 const [eventAuthority] = PublicKey.findProgramAddressSync([Buffer.from("__event_authority")], PUMP_PROGRAM_ID);
-                 const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from("global_volume_accumulator")], PUMP_PROGRAM_ID);
                  const [userVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from("user_volume_accumulator"), devKeypair.publicKey.toBuffer()], PUMP_PROGRAM_ID);
-                 const [feeConfig] = PublicKey.findProgramAddressSync([Buffer.from("fee_config"), FEE_PROGRAM_ID.toBuffer()], FEE_PROGRAM_ID);
+                 const associatedUser = getATA(TARGET_PUMP_TOKEN, devKeypair.publicKey, TOKEN_PROGRAM_2022_ID);
                  
-                 // UPDATED: buyExactSolIn signature and accounts
-                 // FIX: Argument is set to [false] for the Option<bool> type.
                  const buyIx = await program.methods.buyExactSolIn(buyAmount, new BN(1), [false])
                     .accounts({ 
-                        global: PublicKey.findProgramAddressSync([Buffer.from("global")], PUMP_PROGRAM_ID)[0], 
+                        global, 
                         feeRecipient: FEE_RECIPIENT, 
                         mint: TARGET_PUMP_TOKEN, 
                         bondingCurve, 
