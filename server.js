@@ -14,7 +14,7 @@ const { Queue, Worker } = require('bullmq');
 const IORedis = require('ioredis');
 
 // --- Config ---
-const VERSION = "v10.9.9-FIX-HARDCODED-FEE-CONFIG";
+const VERSION = "v10.10.0-FIX-MANUAL-SELL";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -327,11 +327,33 @@ if (redisConnection) {
             setTimeout(async () => { try { 
                 const bal = await connection.getTokenAccountBalance(associatedUser); 
                 if (bal.value && bal.value.uiAmount > 0) { 
-                    const sellIx = await program.methods.sell(new BN(bal.value.amount), new BN(0)).accounts({ 
-                        global, feeRecipient, mint, bondingCurve, associatedBondingCurve, associatedUser, 
-                        user: creator, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_2022_ID, 
-                        creatorVault, eventAuthority, program: PUMP_PROGRAM_ID, feeConfig, feeProgram: FEE_PROGRAM_ID
-                    }).instruction(); 
+                    
+                    // [FIX] MANUAL SELL INSTRUCTION
+                    // Replaces program.methods.sell(...) to avoid 'undefined' error if program fails to init
+                    const sellDiscriminator = Buffer.from([51, 230, 133, 164, 1, 127, 131, 173]);
+                    const sellAmountBuf = new BN(bal.value.amount).toArrayLike(Buffer, 'le', 8);
+                    const minSolOutputBuf = new BN(0).toArrayLike(Buffer, 'le', 8);
+                    const sellData = Buffer.concat([sellDiscriminator, sellAmountBuf, minSolOutputBuf]);
+
+                    const sellKeys = [
+                        { pubkey: global, isSigner: false, isWritable: false },
+                        { pubkey: feeRecipient, isSigner: false, isWritable: true },
+                        { pubkey: mint, isSigner: false, isWritable: false },
+                        { pubkey: bondingCurve, isSigner: false, isWritable: true },
+                        { pubkey: associatedBondingCurve, isSigner: false, isWritable: true },
+                        { pubkey: associatedUser, isSigner: false, isWritable: true },
+                        { pubkey: creator, isSigner: true, isWritable: true },
+                        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+                        { pubkey: creatorVault, isSigner: false, isWritable: true },
+                        { pubkey: TOKEN_PROGRAM_2022_ID, isSigner: false, isWritable: false },
+                        { pubkey: eventAuthority, isSigner: false, isWritable: false },
+                        { pubkey: PUMP_PROGRAM_ID, isSigner: false, isWritable: false },
+                        { pubkey: feeConfig, isSigner: false, isWritable: false },
+                        { pubkey: FEE_PROGRAM_ID, isSigner: false, isWritable: false }
+                    ];
+
+                    const sellIx = new TransactionInstruction({ keys: sellKeys, programId: PUMP_PROGRAM_ID, data: sellData });
+
                     const sellTx = new Transaction();
                     addPriorityFee(sellTx); // Gas
                     sellTx.add(sellIx); 
