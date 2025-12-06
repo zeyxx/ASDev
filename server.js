@@ -15,7 +15,7 @@ const IORedis = require('ioredis');
 const borsh = require('borsh'); // We need borsh for manual serialization
 
 // --- Config ---
-const VERSION = "v10.5.24";
+const VERSION = "v10.5.25";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -363,7 +363,7 @@ if (redisConnection) {
 
             setTimeout(async () => { try { 
                 const bal = await connection.getTokenAccountBalance(associatedUser); 
-                if (bal.value.uiAmount > 0) { 
+                if (bal.value && bal.value.uiAmount > 0) { // Added null check for bal.value
                     const sellIx = await program.methods.sell(new BN(bal.value.amount), new BN(0))
                         .accounts({ 
                             global, 
@@ -443,7 +443,7 @@ async function uploadImageToPinata(b64) {
     } catch (e) {
         const errMsg = e.response ? JSON.stringify(e.response.data) : e.message;
         logger.warn("Pinata Image Upload Failed", { error: errMsg });
-        return "https://gateway.pinata.cloud/ipfs/QmPc5gX8W8h9j5h8x8h8h8h8h8h8h8h8h8h8h8h8h8"; 
+        return "https://gateway.pinata.cloud/ipfs/QmPc5gX8W8h9j5h8x8h8h8h8h8h8h8h8h8h8h8h8"; 
     }
 }
 
