@@ -14,7 +14,7 @@ const { Queue, Worker } = require('bullmq');
 const IORedis = require('ioredis');
 
 // --- Config ---
-const VERSION = "v10.12.0-NO-IDL-PURE-MANUAL";
+const VERSION = "v10.13.0-FIX-IPFS-METADATA-STRUCTURE";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -399,7 +399,20 @@ async function uploadImageToPinata(b64) {
 async function uploadMetadataToPinata(n, s, d, t, w, i) {
     let u = "https://gateway.pinata.cloud/ipfs/QmPc5gX8W8h9j5h8x8h8h8h8h8h8h8h8h8h8h8h8h8";
     if (i) u = await uploadImageToPinata(i);
-    const m = { name: n, symbol: s, description: d, image: u, extensions: { twitter: t, website: w } };
+    
+    // [FIX] Correct Metadata Structure
+    const m = {
+        name: n,
+        symbol: s,
+        description: d,
+        image: u,
+        showName: true,
+        createdOn: "https://pump.fun",
+        twitter: t || "",
+        telegram: "",
+        website: w || ""
+    };
+
     try {
         const r = await axios.post('https://api.pinata.cloud/pinning/pinJSONToIPFS', m, { headers: getPinataJSONHeaders() });
         return `https://gateway.pinata.cloud/ipfs/${r.data.IpfsHash}`;
@@ -446,6 +459,7 @@ app.post('/api/deploy', async (req, res) => {
                 validPayment = txInfo.transaction.message.instructions.some(ix => { 
                     if (ix.programId.toString() !== '11111111111111111111111111111111') return false; 
                     if (ix.parsed.type !== 'transfer') return false; 
+                    // Fee Check: Ensure transaction is >= 0.02 SOL
                     return ix.parsed.info.destination === devKeypair.publicKey.toString() && ix.parsed.info.lamports >= DEPLOYMENT_FEE_SOL * LAMPORTS_PER_SOL; 
                 });
                 break;
@@ -500,6 +514,7 @@ setInterval(async () => {
 
 setInterval(async () => { if (!db) return; const tokens = await db.all('SELECT mint FROM tokens'); for (let i = 0; i < tokens.length; i += 5) { const batch = tokens.slice(i, i + 5); await Promise.all(batch.map(async (t) => { try { const response = await axios.get(`https://frontend-api.pump.fun/coins/${t.mint}`, { timeout: 2000 }); const data = response.data; 
     if (data) {
+        // Update 'complete' status from API response (bonding status)
         const isComplete = data.complete ? 1 : 0;
         await db.run(`UPDATE tokens SET volume24h = ?, marketCap = ?, lastUpdated = ?, complete = ? WHERE mint = ?`, [data.usd_market_cap || 0, data.usd_market_cap || 0, Date.now(), isComplete, t.mint]); 
     }
