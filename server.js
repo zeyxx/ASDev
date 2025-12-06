@@ -361,9 +361,7 @@ function getPumpPDAs(mint) {
     
     // [FIX] Correct Derivation of feeConfig
     // The second seed is the FEE_RECIPIENT_STANDARD address, not the fee program ID.
-    const [feeConfig] = PublicKey.findProgramAddressSync(
-        [Buffer.from("fee_config"), FEE_RECIPIENT_STANDARD.toBuffer()], 
-        FEE_PROGRAM_ID
+    const [feeConfig] = "8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt"
     );
     
     const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from("global_volume_accumulator")], PUMP_PROGRAM_ID);
