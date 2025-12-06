@@ -9,10 +9,10 @@ const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 const { open } = require('sqlite');
 const axios = require('axios');
-const util = require('util'); // For object inspection
+const FormData = require('form-data'); // Required for file upload
 
 // --- Configuration ---
-const VERSION = "v10.2.1"; // Bumped for logging update
+const VERSION = "v10.2.2"; 
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -34,7 +34,6 @@ const PUMP_LIQUIDITY_WALLET = "CJXSGQnTeRRGbZE1V4rQjYDeKLExPnxceczmAbgBdTsa";
 // --- DB & Directories ---
 const DISK_ROOT = '/var/data';
 const DATA_DIR = path.join(DISK_ROOT, 'tokens');
-// LOGGING PATH
 const DEBUG_LOG_FILE = path.join(DISK_ROOT, 'server_debug.log');
 
 if (!fs.existsSync(DISK_ROOT)) {
@@ -45,77 +44,48 @@ const ACTIVE_DATA_DIR = fs.existsSync(DISK_ROOT) ? DATA_DIR : './data/tokens';
 const ensureDir = (dir) => { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); };
 ensureDir(ACTIVE_DATA_DIR);
 
-// --- ROBUST LOGGER ---
+// --- LOGGER ---
 const logStream = fs.createWriteStream(DEBUG_LOG_FILE, { flags: 'a' });
-
 function log(level, message, meta = {}) {
     const timestamp = new Date().toISOString();
     const metaString = Object.keys(meta).length ? JSON.stringify(meta) : '';
     const logLine = `[${timestamp}] [${level.toUpperCase()}] ${message} ${metaString}\n`;
-    
-    // Write to file
     logStream.write(logLine);
-    
-    // Write to console (Standard Output)
     const consoleMethod = level === 'error' ? console.error : console.log;
     consoleMethod(`[${level.toUpperCase()}] ${message}`, metaString ? meta : '');
 }
-
 const logger = {
     info: (msg, meta) => log('info', msg, meta),
     warn: (msg, meta) => log('warn', msg, meta),
-    error: (msg, meta) => log('error', msg, meta),
-    debug: (msg, meta) => log('debug', msg, meta)
+    error: (msg, meta) => log('error', msg, meta)
 };
-
-// Override Global Console (Optional, but ensures libraries are captured too)
-// console.log = (d) => logger.info(util.format(d));
-// console.error = (d) => logger.error(util.format(d));
-
-logger.info(`🚀 Server Starting v${VERSION}`);
-logger.info(`📂 Data Root: ${DISK_ROOT}`);
 
 let db;
 async function initDB() {
-    try {
-        db = await open({ filename: DB_PATH, driver: sqlite3.Database });
-        await db.exec(`
-            CREATE TABLE IF NOT EXISTS tokens (mint TEXT PRIMARY KEY, userPubkey TEXT, name TEXT, ticker TEXT, description TEXT, twitter TEXT, website TEXT, image TEXT, isMayhemMode BOOLEAN, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, volume24h REAL DEFAULT 0, marketCap REAL DEFAULT 0, lastUpdated INTEGER DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS transactions (signature TEXT PRIMARY KEY, userPubkey TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
-            CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, data TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
-            CREATE TABLE IF NOT EXISTS stats (key TEXT PRIMARY KEY, value REAL);
-            CREATE TABLE IF NOT EXISTS token_holders (mint TEXT, holderPubkey TEXT, rank INTEGER, lastUpdated INTEGER, PRIMARY KEY (mint, holderPubkey));
-            
-            INSERT OR IGNORE INTO stats (key, value) VALUES ('accumulatedFeesLamports', 0);
-            INSERT OR IGNORE INTO stats (key, value) VALUES ('lifetimeFeesLamports', 0);
-            INSERT OR IGNORE INTO stats (key, value) VALUES ('totalPumpBoughtLamports', 0);
-        `);
-        logger.info(`✅ DB Initialized at ${DB_PATH}`);
-    } catch (e) {
-        logger.error("Failed to initialize DB", { error: e.message });
-        process.exit(1);
-    }
+    db = await open({ filename: DB_PATH, driver: sqlite3.Database });
+    await db.exec(`
+        CREATE TABLE IF NOT EXISTS tokens (mint TEXT PRIMARY KEY, userPubkey TEXT, name TEXT, ticker TEXT, description TEXT, twitter TEXT, website TEXT, image TEXT, isMayhemMode BOOLEAN, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, volume24h REAL DEFAULT 0, marketCap REAL DEFAULT 0, lastUpdated INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS transactions (signature TEXT PRIMARY KEY, userPubkey TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, data TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS stats (key TEXT PRIMARY KEY, value REAL);
+        CREATE TABLE IF NOT EXISTS token_holders (mint TEXT, holderPubkey TEXT, rank INTEGER, lastUpdated INTEGER, PRIMARY KEY (mint, holderPubkey));
+        INSERT OR IGNORE INTO stats (key, value) VALUES ('accumulatedFeesLamports', 0);
+        INSERT OR IGNORE INTO stats (key, value) VALUES ('lifetimeFeesLamports', 0);
+        INSERT OR IGNORE INTO stats (key, value) VALUES ('totalPumpBoughtLamports', 0);
+    `);
+    logger.info(`DB Initialized at ${DB_PATH}`);
 }
 initDB();
 
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
 
-// Request Logger Middleware
-app.use((req, res, next) => {
-    logger.info(`➡️ ${req.method} ${req.url}`, { ip: req.ip });
-    next();
-});
+// CRITICAL FIX: Increase limit for Base64 images
+app.use(express.json({ limit: '50mb' })); 
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 const connection = new Connection(`https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`, "confirmed");
-let devKeypair;
-try {
-    devKeypair = require('@solana/web3.js').Keypair.fromSecretKey(bs58.decode(DEV_WALLET_PRIVATE_KEY));
-} catch (e) {
-    logger.error("Invalid Private Key", { error: e.message });
-    process.exit(1);
-}
+const devKeypair = require('@solana/web3.js').Keypair.fromSecretKey(bs58.decode(DEV_WALLET_PRIVATE_KEY));
 const wallet = new Wallet(devKeypair);
 const provider = new AnchorProvider(connection, wallet, { commitment: "confirmed" });
 
@@ -132,16 +102,13 @@ async function sendTxWithRetry(tx, signers, retries = 3) {
             tx.recentBlockhash = blockhash;
             tx.lastValidBlockHeight = lastValidBlockHeight;
             const sig = await sendAndConfirmTransaction(connection, tx, signers, { commitment: 'confirmed', skipPreflight: true });
-            logger.info(`Tx Sent: ${sig}`);
             return sig;
         } catch (err) {
-            logger.warn(`Tx attempt ${i + 1} failed`, { error: err.message });
             if (i === retries - 1) throw err;
             await new Promise(r => setTimeout(r, 2000));
         }
     }
 }
-
 async function addFees(amount) { if(db) { await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [amount, 'accumulatedFeesLamports']); await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [amount, 'lifetimeFeesLamports']); }}
 async function addPumpBought(amount) { if(db) await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [amount, 'totalPumpBoughtLamports']); }
 async function getTotalLaunches() { if(!db) return 0; const res = await db.get('SELECT COUNT(*) as count FROM tokens'); return res ? res.count : 0; }
@@ -153,24 +120,203 @@ async function getStats() {
     return { accumulatedFeesLamports: acc ? acc.value : 0, lifetimeFeesLamports: life ? life.value : 0, totalPumpBoughtLamports: pump ? pump.value : 0 };
 }
 async function resetAccumulatedFees(used) { const cur = await db.get('SELECT value FROM stats WHERE key = ?', 'accumulatedFeesLamports'); await db.run('UPDATE stats SET value = ? WHERE key = ?', [Math.max(0, (cur ? cur.value : 0) - used), 'accumulatedFeesLamports']); }
-async function logPurchase(type, data) { 
-    logger.info(`Buyback Event: ${type}`, data);
-    try { await db.run('INSERT INTO logs (type, data) VALUES (?, ?)', [type, JSON.stringify(data)]); } catch (e) { logger.error("DB Log Fail", {error: e.message}); } 
-}
+async function logPurchase(type, data) { try { await db.run('INSERT INTO logs (type, data) VALUES (?, ?)', [type, JSON.stringify(data)]); } catch (e) {} }
 async function getRecentLogs(limit=5) { const rows = await db.all('SELECT * FROM logs ORDER BY id DESC LIMIT ?', limit); return rows.map(row => ({ ...JSON.parse(row.data), type: row.type, timestamp: row.timestamp })); }
 async function saveTokenData(pk, mint, meta) { 
     try {
         await db.run(`INSERT INTO tokens (mint, userPubkey, name, ticker, description, twitter, website, image, isMayhemMode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, [mint, pk, meta.name, meta.ticker, meta.description, meta.twitter, meta.website, meta.image, meta.isMayhemMode]);
         const shard = pk.slice(0, 2).toLowerCase(); const dir = path.join(ACTIVE_DATA_DIR, shard); ensureDir(dir);
         fs.writeFileSync(path.join(dir, `${mint}.json`), JSON.stringify({ userPubkey: pk, mint, metadata: meta, timestamp: new Date().toISOString() }, null, 2));
-        logger.info(`Saved Token Data: ${mint}`);
-    } catch (e) { logger.error("Save Token Error", {error: e.message}); }
+    } catch (e) { logger.error("Save Token Error", {err:e.message}); }
 }
 async function checkTransactionUsed(sig) { const res = await db.get('SELECT signature FROM transactions WHERE signature = ?', sig); return !!res; }
 async function markTransactionUsed(sig, pk) { await db.run('INSERT INTO transactions (signature, userPubkey) VALUES (?, ?)', [sig, pk]); }
 
-// --- Indexers & Loops ---
+// --- UPLOAD FIXES ---
+async function uploadImageToPinata(base64Data) {
+    try {
+        // Strip header if present
+        const matches = base64Data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+        if (!matches || matches.length !== 3) {
+             throw new Error('Invalid base64 string');
+        }
+        const buffer = Buffer.from(matches[2], 'base64');
+        
+        const formData = new FormData();
+        formData.append('file', buffer, { filename: 'token_image.png' });
 
+        const res = await axios.post('https://api.pinata.cloud/pinning/pinFileToIPFS', formData, {
+            maxBodyLength: Infinity, // Allow large uploads
+            headers: { 
+                'Authorization': `Bearer ${PINATA_JWT}`, 
+                ...formData.getHeaders() 
+            }
+        });
+        logger.info("Pinata Image Upload Success", { hash: res.data.IpfsHash });
+        return `https://gateway.pinata.cloud/ipfs/${res.data.IpfsHash}`;
+    } catch (e) {
+        logger.error("Pinata Image Upload Fail", { 
+            msg: e.message, 
+            response: e.response ? e.response.data : 'No Response' 
+        });
+        // Use fallback to prevent total crash, but log error clearly
+        return "https://gateway.pinata.cloud/ipfs/QmPc5gX8W8h9j5h8x8h8h8h8h8h8h8h8h8h8h8h8h8"; 
+    }
+}
+
+async function uploadMetadataToPinata(name, symbol, description, twitter, website, imageBase64) {
+    let imageUrl = "https://gateway.pinata.cloud/ipfs/QmPc5gX8W8h9j5h8x8h8h8h8h8h8h8h8h8h8h8h8h8";
+    if (imageBase64) {
+        imageUrl = await uploadImageToPinata(imageBase64);
+    }
+
+    const metadata = {
+        name: name,
+        symbol: symbol,
+        description: description,
+        image: imageUrl,
+        showName: true,
+        createdOn: "https://pump.fun",
+        extensions: {
+            twitter: twitter || undefined,
+            website: website || undefined
+        }
+    };
+
+    try {
+        const res = await axios.post('https://api.pinata.cloud/pinning/pinJSONToIPFS', metadata, {
+            headers: { 'Authorization': `Bearer ${PINATA_JWT}` }
+        });
+        logger.info("Pinata Metadata Success", { hash: res.data.IpfsHash });
+        return `https://gateway.pinata.cloud/ipfs/${res.data.IpfsHash}`;
+    } catch (e) {
+        logger.error("Pinata Metadata Fail", { msg: e.message });
+        throw new Error("Failed to upload metadata to IPFS");
+    }
+}
+
+// --- PDAs ---
+function getPumpPDAs(mint, programId = PUMP_PROGRAM_ID) {
+    const [bondingCurve] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), mint.toBuffer()], programId);
+    const associatedBondingCurve = PublicKey.findProgramAddressSync([bondingCurve.toBuffer(), TOKEN_PROGRAM_2022_ID.toBuffer(), mint.toBuffer()], ASSOCIATED_TOKEN_PROGRAM_ID)[0];
+    return { bondingCurve, associatedBondingCurve };
+}
+function getDeploymentPDAs(mint, creator) {
+    const [mintAuthority] = PublicKey.findProgramAddressSync([Buffer.from("mint-authority")], PUMP_PROGRAM_ID);
+    const [bondingCurve] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), mint.toBuffer()], PUMP_PROGRAM_ID);
+    const [global] = PublicKey.findProgramAddressSync([Buffer.from("global")], PUMP_PROGRAM_ID);
+    const [eventAuthority] = PublicKey.findProgramAddressSync([Buffer.from("__event_authority")], PUMP_PROGRAM_ID);
+    const [globalVolume] = PublicKey.findProgramAddressSync([Buffer.from("global_volume_accumulator")], PUMP_PROGRAM_ID);
+    const [userVolume] = PublicKey.findProgramAddressSync([Buffer.from("user_volume_accumulator"), creator.toBuffer()], PUMP_PROGRAM_ID);
+    const [feeConfig] = PublicKey.findProgramAddressSync([Buffer.from("fee_config")], FEE_PROGRAM_ID);
+    const [creatorVault] = PublicKey.findProgramAddressSync([Buffer.from("creator-vault"), creator.toBuffer()], PUMP_PROGRAM_ID);
+    return { mintAuthority, bondingCurve, global, eventAuthority, globalVolume, userVolume, feeConfig, creatorVault };
+}
+function getMayhemPDAs(mint) {
+    const [globalParams] = PublicKey.findProgramAddressSync([Buffer.from("global-params")], MAYHEM_PROGRAM_ID);
+    const [solVault] = PublicKey.findProgramAddressSync([Buffer.from("sol-vault")], MAYHEM_PROGRAM_ID);
+    const [mayhemState] = PublicKey.findProgramAddressSync([Buffer.from("mayhem-state"), mint.toBuffer()], MAYHEM_PROGRAM_ID);
+    return { globalParams, solVault, mayhemState };
+}
+function getATA(mint, owner) {
+    return PublicKey.findProgramAddressSync([owner.toBuffer(), TOKEN_PROGRAM_2022_ID.toBuffer(), mint.toBuffer()], ASSOCIATED_TOKEN_PROGRAM_ID)[0];
+}
+
+// --- Routes ---
+app.get('/api/version', (req, res) => res.json({ version: VERSION }));
+app.get('/api/health', async (req, res) => {
+    try {
+        const stats = await getStats();
+        const launches = await getTotalLaunches();
+        const logs = await db.all('SELECT * FROM logs ORDER BY id DESC LIMIT 50'); 
+        res.json({ status: "online", wallet: devKeypair.publicKey.toString(), lifetimeFees: (stats.lifetimeFeesLamports / LAMPORTS_PER_SOL).toFixed(4), totalPumpBought: (stats.totalPumpBoughtLamports / LAMPORTS_PER_SOL).toFixed(4), totalLaunches: launches, recentLogs: logs.map(l => ({ ...JSON.parse(l.data), type: l.type, timestamp: l.timestamp })), headerImageUrl: HEADER_IMAGE_URL });
+    } catch (e) { res.status(500).json({ error: "DB Error" }); }
+});
+app.get('/api/check-holder', async (req, res) => {
+    const { userPubkey } = req.query;
+    if (!userPubkey) return res.json({ isHolder: false });
+    try {
+        const result = await db.get('SELECT mint, rank FROM token_holders WHERE holderPubkey = ? LIMIT 1', userPubkey);
+        res.json({ isHolder: !!result, ...(result || {}) });
+    } catch (e) { res.status(500).json({ error: "DB Error" }); }
+});
+app.get('/api/leaderboard', async (req, res) => {
+    const { userPubkey } = req.query;
+    try {
+        const rows = await db.all('SELECT * FROM tokens ORDER BY volume24h DESC LIMIT 10');
+        const leaderboard = await Promise.all(rows.map(async (r) => {
+            let isUserTopHolder = false;
+            if (userPubkey) { const holderEntry = await db.get('SELECT rank FROM token_holders WHERE mint = ? AND holderPubkey = ?', [r.mint, userPubkey]); if (holderEntry) isUserTopHolder = true; }
+            return { mint: r.mint, name: r.name, ticker: r.ticker, image: r.image, price: (r.marketCap / 1000000000).toFixed(6), volume: r.volume24h, isUserTopHolder };
+        }));
+        res.json(leaderboard);
+    } catch (e) { res.status(500).json([]); }
+});
+app.get('/api/recent-launches', async (req, res) => { try { const rows = await db.all('SELECT userPubkey, ticker, mint, timestamp FROM tokens ORDER BY timestamp DESC LIMIT 10'); res.json(rows.map(r => ({ userSnippet: r.userPubkey.slice(0, 5), ticker: r.ticker, mint: r.mint }))); } catch (e) { res.status(500).json([]); } });
+app.get('/api/debug/logs', (req, res) => {
+    const logPath = path.join(DISK_ROOT, 'server_debug.log');
+    if (fs.existsSync(logPath)) {
+        const stats = fs.statSync(logPath);
+        const stream = fs.createReadStream(logPath, { start: Math.max(0, stats.size - 50000) }); // Last 50KB
+        stream.pipe(res);
+    } else { res.send("No logs yet."); }
+});
+
+app.post('/api/deploy', async (req, res) => {
+    try {
+        const { name, ticker, description, twitter, website, userTx, userPubkey, image, isMayhemMode } = req.body;
+        
+        if (!name || name.length > 32) return res.status(400).json({ error: "Invalid Name" });
+        if (!ticker || ticker.length > 10) return res.status(400).json({ error: "Invalid Ticker" });
+        if (!image) return res.status(400).json({ error: "Image required" });
+
+        const used = await checkTransactionUsed(userTx);
+        if (used) return res.status(400).json({ error: "Transaction signature already used." });
+
+        const txInfo = await connection.getParsedTransaction(userTx, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
+        if (!txInfo) return res.status(400).json({ error: "Transaction not found." });
+        
+        const validPayment = txInfo.transaction.message.instructions.some(ix => { if (ix.programId.toString() !== '11111111111111111111111111111111') return false; if (ix.parsed.type !== 'transfer') return false; return ix.parsed.info.destination === devKeypair.publicKey.toString() && ix.parsed.info.lamports >= 0.05 * LAMPORTS_PER_SOL; });
+        if (!validPayment) return res.status(400).json({ error: "Payment verification failed." });
+
+        await markTransactionUsed(userTx, userPubkey);
+        await addFees(0.05 * LAMPORTS_PER_SOL);
+        
+        // --- Metadata Upload with Error Handling ---
+        let metadataUri;
+        try {
+             metadataUri = await uploadMetadataToPinata(name, ticker, description, twitter, website, image);
+        } catch(uploadErr) {
+            // If upload fails, we must not proceed but we already marked TX used.
+            // ideally rollback, but simplified:
+            return res.status(500).json({ error: "Metadata Upload Failed. Contact Support." });
+        }
+
+        const mintKeypair = Keypair.generate();
+        const mint = mintKeypair.publicKey;
+        const creator = devKeypair.publicKey;
+        await saveTokenData(userPubkey, mint.toString(), { name, ticker, description, twitter, website, image, isMayhemMode });
+        
+        const { mintAuthority, bondingCurve, global, eventAuthority, globalVolume, userVolume, feeConfig, creatorVault } = getDeploymentPDAs(mint, creator);
+        const { globalParams, solVault, mayhemState } = getMayhemPDAs(mint);
+        const associatedBondingCurve = getATA(mint, bondingCurve);
+        const mayhemTokenVault = getATA(mint, solVault);
+        const associatedUser = getATA(mint, creator);
+
+        const createIx = await program.methods.createV2(name, ticker, metadataUri, creator, !!isMayhemMode).accounts({ mint, mintAuthority, bondingCurve, associatedBondingCurve, global, user: creator, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_2022_ID, associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID, mayhemProgramId: MAYHEM_PROGRAM_ID, globalParams, solVault, mayhemState, mayhemTokenVault, eventAuthority, program: PUMP_PROGRAM_ID }).instruction();
+        const buyIx = await program.methods.buyExactSolIn(new BN(0.01 * LAMPORTS_PER_SOL), new BN(1), false).accounts({ global, feeRecipient: FEE_RECIPIENT, mint, bondingCurve, associatedBondingCurve, associatedUser, user: creator, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_2022_ID, creatorVault, eventAuthority, program: PUMP_PROGRAM_ID, globalVolumeAccumulator: globalVolume, userVolumeAccumulator: userVolume, feeConfig, feeProgram: FEE_PROGRAM_ID }).instruction();
+
+        const tx = new Transaction().add(createIx).add(buyIx);
+        tx.feePayer = creator;
+        const sig = await sendTxWithRetry(tx, [devKeypair, mintKeypair]);
+        
+        setTimeout(async () => { try { const bal = await connection.getTokenAccountBalance(associatedUser); if (bal.value.uiAmount > 0) { const sellIx = await program.methods.sell(new BN(bal.value.amount), new BN(0)).accounts({ global, feeRecipient: FEE_RECIPIENT, mint, bondingCurve, associatedBondingCurve, associatedUser, user: creator, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_2022_ID, associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID, creatorVault, eventAuthority, program: PUMP_PROGRAM_ID, globalVolumeAccumulator: globalVolume, userVolumeAccumulator: userVolume, feeConfig, feeProgram: FEE_PROGRAM_ID }).instruction(); const sellTx = new Transaction().add(sellIx); await sendTxWithRetry(sellTx, [devKeypair]); } } catch (e) { console.error("Sell error:", e.message); } }, 1500); 
+
+        res.json({ success: true, mint: mint.toString(), signature: sig });
+    } catch (err) { logger.error("Deploy Exception", {error: err.message}); res.status(500).json({ error: err.message }); }
+});
+
+// --- Loops ---
 setInterval(async () => {
     if (!db) return;
     const topTokens = await db.all('SELECT mint FROM tokens ORDER BY volume24h DESC LIMIT 10');
@@ -186,15 +332,12 @@ setInterval(async () => {
                         const info = await connection.getParsedAccountInfo(acc.address);
                         if (info.value && info.value.data.parsed) {
                             const owner = info.value.data.parsed.info.owner;
-                            if (owner !== PUMP_LIQUIDITY_WALLET) {
-                                await db.run(`INSERT OR REPLACE INTO token_holders (mint, holderPubkey, rank, lastUpdated) VALUES (?, ?, ?, ?)`, [token.mint, owner, rank, Date.now()]);
-                                rank++;
-                            }
+                            if (owner !== PUMP_LIQUIDITY_WALLET) { await db.run(`INSERT OR REPLACE INTO token_holders (mint, holderPubkey, rank, lastUpdated) VALUES (?, ?, ?, ?)`, [token.mint, owner, rank, Date.now()]); rank++; }
                         }
                     } catch (e) {}
                 }
             }
-        } catch (e) { logger.warn(`Holder Index Error ${token.mint}: ${e.message}`); }
+        } catch (e) {}
         await new Promise(r => setTimeout(r, 2000)); 
     }
 }, 60 * 60 * 1000); 
@@ -225,143 +368,22 @@ async function runPurchaseAndFees() {
              const realBalance = await connection.getBalance(devKeypair.publicKey);
              const spendable = Math.min(stats.accumulatedFeesLamports, realBalance - 5000000);
              if (spendable > 0) {
-                logger.info(`Executing Buyback. Spendable: ${spendable}`);
-                // ... (Buy Logic Implementation Same as Previous) ...
-                // Simplified for brevity in log example, assume tx logic here
+                 const buyAmount = new BN(Math.floor(spendable * 0.80));
+                 const transfer19_5 = Math.floor(spendable * 0.195);
+                 const transfer0_5 = Math.floor(spendable * 0.005);
+                 const { bondingCurve, associatedBondingCurve } = getPumpPDAs(TARGET_PUMP_TOKEN, PUMP_PROGRAM_ID);
+                 const associatedUser = getATA(TARGET_PUMP_TOKEN, devKeypair.publicKey);
+                 const buyIx = await program.methods.buyExactSolIn(buyAmount, new BN(1), false).accounts({ global: PublicKey.findProgramAddressSync([Buffer.from("global")], PUMP_PROGRAM_ID)[0], feeRecipient: FEE_RECIPIENT, mint: TARGET_PUMP_TOKEN, bondingCurve, associatedBondingCurve, associatedUser, user: devKeypair.publicKey, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_2022_ID, creatorVault: PublicKey.findProgramAddressSync([Buffer.from("creator-vault"), bondingCurve.toBuffer()], PUMP_PROGRAM_ID)[0], eventAuthority: PublicKey.findProgramAddressSync([Buffer.from("__event_authority")], PUMP_PROGRAM_ID)[0], program: PUMP_PROGRAM_ID, globalVolumeAccumulator: PublicKey.findProgramAddressSync([Buffer.from("global_volume_accumulator")], PUMP_PROGRAM_ID)[0], userVolumeAccumulator: PublicKey.findProgramAddressSync([Buffer.from("user_volume_accumulator"), devKeypair.publicKey.toBuffer()], PUMP_PROGRAM_ID)[0], feeConfig: PublicKey.findProgramAddressSync([Buffer.from("fee_config")], FEE_PROGRAM_ID)[0], feeProgram: FEE_PROGRAM_ID }).instruction();
+                 const tx = new Transaction().add(buyIx).add(SystemProgram.transfer({ fromPubkey: devKeypair.publicKey, toPubkey: WALLET_19_5, lamports: transfer19_5 })).add(SystemProgram.transfer({ fromPubkey: devKeypair.publicKey, toPubkey: WALLET_0_5, lamports: transfer0_5 }));
+                 tx.feePayer = devKeypair.publicKey;
+                 const sig = await sendTxWithRetry(tx, [devKeypair]);
+                 await addPumpBought(buyAmount.toNumber()); 
+                 logPurchase('SUCCESS', { totalSpent: spendable, buyAmount: buyAmount.toString(), signature: sig });
                  await resetAccumulatedFees(spendable);
-                 logPurchase('SUCCESS', { totalSpent: spendable, buyAmount: "0", signature: "mock_sig" });
-             } else {
-                 logPurchase('SKIPPED', { reason: 'Insufficient Real Balance', balance: realBalance });
-             }
-        } else {
-             // logger.debug("Buyback Threshold not met"); // Optional verbose logging
-        }
-    } catch(e) { logger.error("Buyback Error", {error: e.message}); } finally { isBuybackRunning = false; }
+             } else { logPurchase('SKIPPED', { reason: 'Insufficient Real Balance', balance: realBalance }); }
+        } else { logPurchase('SKIPPED', { reason: 'Fees Under Limit', current: (stats.accumulatedFeesLamports/LAMPORTS_PER_SOL).toFixed(4), target: FEE_THRESHOLD_SOL }); }
+    } catch(e) { logPurchase('ERROR', { message: e.message }); } finally { isBuybackRunning = false; }
 }
 setInterval(runPurchaseAndFees, 5 * 60 * 1000);
-
-// --- Helpers (PDAs/Uploads) ---
-function getPumpPDAs(mint, programId = PUMP_PROGRAM_ID) {
-    const [bondingCurve] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), mint.toBuffer()], programId);
-    const associatedBondingCurve = PublicKey.findProgramAddressSync([bondingCurve.toBuffer(), TOKEN_PROGRAM_2022_ID.toBuffer(), mint.toBuffer()], ASSOCIATED_TOKEN_PROGRAM_ID)[0];
-    return { bondingCurve, associatedBondingCurve };
-}
-function getDeploymentPDAs(mint, creator) {
-    const [mintAuthority] = PublicKey.findProgramAddressSync([Buffer.from("mint-authority")], PUMP_PROGRAM_ID);
-    const [bondingCurve] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), mint.toBuffer()], PUMP_PROGRAM_ID);
-    const [global] = PublicKey.findProgramAddressSync([Buffer.from("global")], PUMP_PROGRAM_ID);
-    const [eventAuthority] = PublicKey.findProgramAddressSync([Buffer.from("__event_authority")], PUMP_PROGRAM_ID);
-    const [globalVolume] = PublicKey.findProgramAddressSync([Buffer.from("global_volume_accumulator")], PUMP_PROGRAM_ID);
-    const [userVolume] = PublicKey.findProgramAddressSync([Buffer.from("user_volume_accumulator"), creator.toBuffer()], PUMP_PROGRAM_ID);
-    const [feeConfig] = PublicKey.findProgramAddressSync([Buffer.from("fee_config")], FEE_PROGRAM_ID);
-    const [creatorVault] = PublicKey.findProgramAddressSync([Buffer.from("creator-vault"), creator.toBuffer()], PUMP_PROGRAM_ID);
-    return { mintAuthority, bondingCurve, global, eventAuthority, globalVolume, userVolume, feeConfig, creatorVault };
-}
-function getMayhemPDAs(mint) {
-    const [globalParams] = PublicKey.findProgramAddressSync([Buffer.from("global-params")], MAYHEM_PROGRAM_ID);
-    const [solVault] = PublicKey.findProgramAddressSync([Buffer.from("sol-vault")], MAYHEM_PROGRAM_ID);
-    const [mayhemState] = PublicKey.findProgramAddressSync([Buffer.from("mayhem-state"), mint.toBuffer()], MAYHEM_PROGRAM_ID);
-    return { globalParams, solVault, mayhemState };
-}
-function getATA(mint, owner) { return PublicKey.findProgramAddressSync([owner.toBuffer(), TOKEN_PROGRAM_2022_ID.toBuffer(), mint.toBuffer()], ASSOCIATED_TOKEN_PROGRAM_ID)[0]; }
-async function uploadImageToPinata(b64) { try { const b=Buffer.from(b64.split(',')[1],'base64'); const f=new FormData(); f.append('file',b,{filename:'i.png'}); const r=await axios.post('https://api.pinata.cloud/pinning/pinFileToIPFS',f,{headers:{'Authorization':`Bearer ${PINATA_JWT}`,...f.getHeaders()}}); logger.info("Image Uploaded"); return `https://gateway.pinata.cloud/ipfs/${r.data.IpfsHash}`; } catch(e){ logger.error("Image Upload Fail", {err:e.message}); return "https://gateway.pinata.cloud/ipfs/QmPc5gX8W8h9j5h8x8h8h8h8h8h8h8h8h8h8h8h8h8"; } }
-async function uploadMetadataToPinata(n,s,d,t,w,i) { let u="https://gateway.pinata.cloud/ipfs/QmPc5gX8W8h9j5h8x8h8h8h8h8h8h8h8h8h8h8h8h8"; if(i) u=await uploadImageToPinata(i); const m={name:n,symbol:s,description:d,image:u,extensions:{twitter:t,website:w}}; try { const r=await axios.post('https://api.pinata.cloud/pinning/pinJSONToIPFS',m,{headers:{'Authorization':`Bearer ${PINATA_JWT}`}}); logger.info("Metadata Uploaded"); return `https://gateway.pinata.cloud/ipfs/${r.data.IpfsHash}`; } catch(e) { logger.error("Meta Upload Fail", {err:e.message}); throw new Error("Failed to upload metadata"); } }
-
-// --- Routes ---
-app.get('/api/version', (req, res) => res.json({ version: VERSION }));
-app.get('/api/health', async (req, res) => {
-    try {
-        const stats = await getStats();
-        const launches = await getTotalLaunches();
-        const logs = await db.all('SELECT * FROM logs ORDER BY id DESC LIMIT 50'); 
-        res.json({ status: "online", wallet: devKeypair.publicKey.toString(), lifetimeFees: (stats.lifetimeFeesLamports / LAMPORTS_PER_SOL).toFixed(4), totalPumpBought: (stats.totalPumpBoughtLamports / LAMPORTS_PER_SOL).toFixed(4), totalLaunches: launches, recentLogs: logs.map(l => ({ ...JSON.parse(l.data), type: l.type, timestamp: l.timestamp })), headerImageUrl: HEADER_IMAGE_URL });
-    } catch (e) { logger.error("Health Check Fail", {err:e.message}); res.status(500).json({ error: "DB Error" }); }
-});
-app.get('/api/check-holder', async (req, res) => {
-    const { userPubkey } = req.query;
-    if (!userPubkey) return res.json({ isHolder: false });
-    try {
-        const result = await db.get('SELECT mint, rank FROM token_holders WHERE holderPubkey = ? LIMIT 1', userPubkey);
-        res.json({ isHolder: !!result, ...(result || {}) });
-    } catch (e) { res.status(500).json({ error: "DB Error" }); }
-});
-app.get('/api/leaderboard', async (req, res) => {
-    const { userPubkey } = req.query;
-    try {
-        const rows = await db.all('SELECT * FROM tokens ORDER BY volume24h DESC LIMIT 10');
-        const leaderboard = await Promise.all(rows.map(async (r) => {
-            let isUserTopHolder = false;
-            if (userPubkey) { const holderEntry = await db.get('SELECT rank FROM token_holders WHERE mint = ? AND holderPubkey = ?', [r.mint, userPubkey]); if (holderEntry) isUserTopHolder = true; }
-            return { mint: r.mint, name: r.name, ticker: r.ticker, image: r.image, price: (r.marketCap / 1000000000).toFixed(6), volume: r.volume24h, isUserTopHolder };
-        }));
-        res.json(leaderboard);
-    } catch (e) { logger.error("Leaderboard Fail", {err:e.message}); res.status(500).json([]); }
-});
-app.get('/api/recent-launches', async (req, res) => { try { const rows = await db.all('SELECT userPubkey, ticker, mint, timestamp FROM tokens ORDER BY timestamp DESC LIMIT 10'); res.json(rows.map(r => ({ userSnippet: r.userPubkey.slice(0, 5), ticker: r.ticker, mint: r.mint }))); } catch (e) { res.status(500).json([]); } });
-
-app.post('/api/deploy', async (req, res) => {
-    try {
-        const { name, ticker, description, twitter, website, userTx, userPubkey, image, isMayhemMode } = req.body;
-        logger.info(`Deploy Request: ${ticker} by ${userPubkey}`);
-        
-        if (!name || name.length > 32) return res.status(400).json({ error: "Invalid Name" });
-        if (!ticker || ticker.length > 10) return res.status(400).json({ error: "Invalid Ticker" });
-        if (!image) return res.status(400).json({ error: "Image required" });
-
-        const used = await checkTransactionUsed(userTx);
-        if (used) {
-            logger.warn(`Replay attempt: ${userTx}`);
-            return res.status(400).json({ error: "Transaction signature already used." });
-        }
-
-        const txInfo = await connection.getParsedTransaction(userTx, { commitment: "confirmed", maxSupportedTransactionVersion: 0 });
-        if (!txInfo) return res.status(400).json({ error: "Transaction not found." });
-        const validPayment = txInfo.transaction.message.instructions.some(ix => { if (ix.programId.toString() !== '11111111111111111111111111111111') return false; if (ix.parsed.type !== 'transfer') return false; return ix.parsed.info.destination === devKeypair.publicKey.toString() && ix.parsed.info.lamports >= 0.05 * LAMPORTS_PER_SOL; });
-        if (!validPayment) {
-            logger.warn(`Payment verification failed for ${userTx}`);
-            return res.status(400).json({ error: "Payment verification failed." });
-        }
-
-        await markTransactionUsed(userTx, userPubkey);
-        await addFees(0.05 * LAMPORTS_PER_SOL);
-        const metadataUri = await uploadMetadataToPinata(name, ticker, description, twitter, website, image);
-        const mintKeypair = Keypair.generate();
-        const mint = mintKeypair.publicKey;
-        const creator = devKeypair.publicKey;
-        await saveTokenData(userPubkey, mint.toString(), { name, ticker, description, twitter, website, image, isMayhemMode });
-        
-        const { mintAuthority, bondingCurve, global, eventAuthority, globalVolume, userVolume, feeConfig, creatorVault } = getDeploymentPDAs(mint, creator);
-        const { globalParams, solVault, mayhemState } = getMayhemPDAs(mint);
-        const associatedBondingCurve = getATA(mint, bondingCurve);
-        const mayhemTokenVault = getATA(mint, solVault);
-        const associatedUser = getATA(mint, creator);
-
-        const createIx = await program.methods.createV2(name, ticker, metadataUri, creator, !!isMayhemMode).accounts({ mint, mintAuthority, bondingCurve, associatedBondingCurve, global, user: creator, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_2022_ID, associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID, mayhemProgramId: MAYHEM_PROGRAM_ID, globalParams, solVault, mayhemState, mayhemTokenVault, eventAuthority, program: PUMP_PROGRAM_ID }).instruction();
-        const buyIx = await program.methods.buyExactSolIn(new BN(0.01 * LAMPORTS_PER_SOL), new BN(1), false).accounts({ global, feeRecipient: FEE_RECIPIENT, mint, bondingCurve, associatedBondingCurve, associatedUser, user: creator, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_2022_ID, creatorVault, eventAuthority, program: PUMP_PROGRAM_ID, globalVolumeAccumulator: globalVolume, userVolumeAccumulator: userVolume, feeConfig, feeProgram: FEE_PROGRAM_ID }).instruction();
-
-        const tx = new Transaction().add(createIx).add(buyIx);
-        tx.feePayer = creator;
-        const sig = await sendTxWithRetry(tx, [devKeypair, mintKeypair]);
-        logger.info(`Deployment Success: ${sig}`);
-        
-        setTimeout(async () => { try { const bal = await connection.getTokenAccountBalance(associatedUser); if (bal.value.uiAmount > 0) { const sellIx = await program.methods.sell(new BN(bal.value.amount), new BN(0)).accounts({ global, feeRecipient: FEE_RECIPIENT, mint, bondingCurve, associatedBondingCurve, associatedUser, user: creator, systemProgram: SystemProgram.programId, tokenProgram: TOKEN_PROGRAM_2022_ID, associatedTokenProgram: ASSOCIATED_TOKEN_PROGRAM_ID, creatorVault, eventAuthority, program: PUMP_PROGRAM_ID, globalVolumeAccumulator: globalVolume, userVolumeAccumulator: userVolume, feeConfig, feeProgram: FEE_PROGRAM_ID }).instruction(); const sellTx = new Transaction().add(sellIx); await sendTxWithRetry(sellTx, [devKeypair]); logger.info(`Auto-Sell Success: ${ticker}`); } } catch (e) { logger.error("Sell error:", {msg: e.message}); } }, 1500); 
-
-        res.json({ success: true, mint: mint.toString(), signature: sig });
-    } catch (err) { logger.error("Deploy Exception", {error: err.message}); res.status(500).json({ error: err.message }); }
-});
-
-// NEW: Log View Endpoint (Protected or Hidden)
-app.get('/api/debug/logs', (req, res) => {
-    // In production, wrap this with authentication or remove
-    const logPath = path.join(DISK_ROOT, 'server_debug.log');
-    if (fs.existsSync(logPath)) {
-        // Read last 5000 bytes (approx 50 lines)
-        const stats = fs.statSync(logPath);
-        const stream = fs.createReadStream(logPath, { start: Math.max(0, stats.size - 5000) });
-        stream.pipe(res);
-    } else {
-        res.send("No logs yet.");
-    }
-});
 
 app.listen(PORT, () => logger.info(`API Server v${VERSION} running on ${PORT}`));

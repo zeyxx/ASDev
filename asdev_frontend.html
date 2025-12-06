@@ -61,6 +61,7 @@
         .metric-card { background: rgba(0,0,0,0.2); border: 1px solid #ea580c; padding: 20px; border-radius: 8px; text-align: center; }
         .metric-value { font-size: 24px; font-weight: bold; color: white; font-family: 'JetBrains Mono'; margin-top: 5px; }
         .metric-label { font-size: 12px; color: #fdba74; text-transform: uppercase; letter-spacing: 1px; }
+        .holder-check { color: #4ade80; font-weight: bold; margin-left: 8px; }
     </style>
 </head>
 <body>
@@ -133,34 +134,21 @@
             <div id="log-feed" class="flex flex-col gap-1 max-h-[120px] overflow-hidden"><p class="text-xs text-orange-400 font-mono text-center py-4">Waiting for next synchronization...</p></div>
         </div>
 
-        <!-- NEW: Platform Metrics Section -->
         <div class="panel bg-orange-900/10 mt-8 lg:col-span-3">
             <h3 class="text-orange-500 font-mono text-sm uppercase tracking-widest border-b border-orange-900/50 pb-2 mb-6">PLATFORM METRICS</h3>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div class="metric-card">
-                    <div class="metric-label">Lifetime Launches</div>
-                    <div id="metric-launches" class="metric-value">0</div>
-                </div>
-                <div class="metric-card">
-                    <!-- UPDATED HEADER -->
-                    <div class="metric-label">$PUMP Tokens Bought</div>
-                    <div id="metric-pump" class="metric-value">0</div>
-                </div>
-                <div class="metric-card">
-                    <!-- UPDATED HEADER -->
-                    <div class="metric-label">ASDF Buybacks (SOL)</div>
-                    <div id="metric-fees" class="metric-value">0.00</div>
-                </div>
+                <div class="metric-card"><div class="metric-label">Lifetime Launches</div><div id="metric-launches" class="metric-value">0</div></div>
+                <div class="metric-card"><div class="metric-label">$PUMP Tokens Bought</div><div id="metric-pump" class="metric-value">0</div></div>
+                <div class="metric-card"><div class="metric-label">ASDF Buybacks (SOL)</div><div id="metric-fees" class="metric-value">0.00</div></div>
             </div>
         </div>
-
 
         <div class="panel bg-orange-900/20 mt-8 lg:col-span-3">
             <div class="border-b border-orange-900/50 pb-2 mb-4"><h3 class="text-orange-500 font-mono text-sm uppercase tracking-widest">FEE & BUYBACK MECHANICS</h3></div>
             <div id="about-content-static">
                 
                 <p class="text-orange-200 text-sm leading-relaxed font-sans mb-4">The platform implements an automated flywheel mechanism designed for ecosystem stability and growth, funded by the mandatory <span class="text-white font-mono">0.05 SOL</span> deployment fee. This fee is automatically added to a reserve pool.</p>
-                <h4 class="text-white font-bold mb-2 text-base">Autoclaim & Distribution Breakdown (Every 5 Minutes, Threshold: 0.20 SOL)</h4>
+                <h4 class="text-white text-base mb-2">Autoclaim & Distribution Breakdown (Every 5 Minutes, Threshold: 0.20 SOL)</h4>
                 <ul class="list-disc list-inside text-orange-300 text-sm font-mono space-y-2">
                     <li><span class="text-green-400 font-bold">80.0%</span>: Utilized for immediate buyback of the **$PUMP** token (Contract: `pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn`), **accumulating for airdrops**.</li>
                     <li><span class="text-red-400 font-bold">19.5%</span>: **Sent to the Fee Wallet for Buybacks and Burns of $ASDFASDFA**.</li>
@@ -195,7 +183,6 @@
     let userPubkey = null;
     let allLogs = []; 
     let connection = new solanaWeb3.Connection(HELIUS_RPC_URL, "confirmed"); 
-    // CACHE for pump price
     let pumpPriceCache = 0.0;
 
     const ui = {
@@ -213,25 +200,35 @@
 
     fetch(`${BACKEND_URL}/api/version`).then(r=>r.json()).then(d=>ui.versionDisplay.innerText = d.version).catch(()=>{});
 
-    // Fetch $PUMP Price for Display Logic
     const updatePumpPrice = async () => {
         try {
             const res = await fetch(`https://frontend-api.pump.fun/coins/${PUMP_CONTRACT}`);
             const data = await res.json();
-            // Calculate Price in SOL: Virtual Sol / Virtual Token
             if (data && data.virtual_sol_reserves && data.virtual_token_reserves) {
                 pumpPriceCache = data.virtual_sol_reserves / data.virtual_token_reserves;
             }
-        } catch (e) { console.error("Pump Price Fetch Error", e); }
+        } catch (e) {}
     };
-    setInterval(updatePumpPrice, 60000); updatePumpPrice(); // Every 1 min
+    setInterval(updatePumpPrice, 60000); updatePumpPrice(); 
 
     const updateLeaderboard = async () => {
         try {
-            const res = await fetch(`${BACKEND_URL}/api/leaderboard`);
+            const res = await fetch(`${BACKEND_URL}/api/leaderboard${userPubkey ? '?userPubkey='+userPubkey : ''}`);
             const data = await res.json();
             if (!data || data.length === 0) { ui.leaderboardBody.innerHTML = '<tr><td colspan="6" class="text-center text-orange-400 py-4">No active tokens found.</td></tr>'; return; }
-            ui.leaderboardBody.innerHTML = data.map((item, index) => `<tr><td class="text-orange-500 font-bold">${index + 1}</td><td><img src="${item.image || 'https://placehold.co/24x24/333/fff?text=?'}" class="token-img-sm" alt="icon"><span class="text-white font-bold">${item.ticker}</span></td><td class="text-orange-200 truncate max-w-[100px]">${item.name}</td><td class="text-right text-green-400">$${item.price}</td><td class="text-right text-white font-bold">$${parseFloat(item.volume).toLocaleString()}</td><td class="text-right"><a href="${PUMPFUN_URL_BASE}${item.mint}" target="_blank" class="text-xs bg-orange-900/50 border border-orange-700 text-orange-300 px-2 py-1 rounded hover:bg-orange-800 hover:text-white transition">TRADE</a></td></tr>`).join('');
+            ui.leaderboardBody.innerHTML = data.map((item, index) => `
+                <tr>
+                    <td class="text-orange-500 font-bold">${index + 1}</td>
+                    <td>
+                        <img src="${item.image || 'https://placehold.co/24x24/333/fff?text=?'}" class="token-img-sm" alt="icon">
+                        <span class="text-white font-bold">${item.ticker}</span>
+                        ${item.isUserTopHolder ? '<span class="holder-check" title="You are a Top 100 Holder">✅</span>' : ''}
+                    </td>
+                    <td class="text-orange-200 truncate max-w-[100px]">${item.name}</td>
+                    <td class="text-right text-green-400">$${item.price}</td>
+                    <td class="text-right text-white font-bold">$${parseFloat(item.volume).toLocaleString()}</td>
+                    <td class="text-right"><a href="${PUMPFUN_URL_BASE}${item.mint}" target="_blank" class="text-xs bg-orange-900/50 border border-orange-700 text-orange-300 px-2 py-1 rounded hover:bg-orange-800 hover:text-white transition">TRADE</a></td>
+                </tr>`).join('');
         } catch (e) {}
     };
     setInterval(updateLeaderboard, 60000); updateLeaderboard();
@@ -270,22 +267,14 @@
                 const data = await res.json(); 
                 ui.sysStatus.innerText = "ONLINE"; ui.sysStatus.classList.add("online"); 
                 ui.headerImage.src = data.headerImageUrl || "https://placehold.co/60x60/d97706/ffffff?text=LOGO"; 
-                
-                // Update Metrics
                 if (data.lifetimeFees) ui.metricFees.innerText = data.lifetimeFees; 
                 if (data.totalLaunches) ui.metricLaunches.innerText = data.totalLaunches; 
                 
                 // --- CALCULATION LOGIC: Estimate Tokens from SOL Spent ---
                 const solSpent = parseFloat(data.totalPumpBought || 0);
                 let tokensBought = "0";
-                
-                // If we have a valid price cache, use it. Otherwise fallback to a static estimate for visual continuity
-                if (pumpPriceCache > 0) {
-                    tokensBought = (solSpent / pumpPriceCache).toLocaleString('en-US', {maximumFractionDigits: 0});
-                } else {
-                    // Fallback: Assume 1 SOL ~ 30,000,000 PUMP (Approx launch rate) if API fails
-                    tokensBought = (solSpent * 30000000).toLocaleString('en-US', {maximumFractionDigits: 0});
-                }
+                if (pumpPriceCache > 0) { tokensBought = (solSpent / pumpPriceCache).toLocaleString('en-US', {maximumFractionDigits: 0}); } 
+                else { tokensBought = (solSpent * 30000000).toLocaleString('en-US', {maximumFractionDigits: 0}); }
                 ui.metricPump.innerText = tokensBought;
 
                 allLogs = data.recentLogs; 
