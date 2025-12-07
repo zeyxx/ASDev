@@ -93,7 +93,6 @@ let isAirdropping = false;
 let globalTotalPoints = 0; // Tracks total score of all users for airdrop calculation
 
 // --- DB & Directories ---
-const DISK_ROOT = '/var/data'; 
 const DEBUG_LOG_FILE = path.join(DISK_ROOT, 'server_debug.log');
 if (!fs.existsSync(DISK_ROOT)) { if (!fs.existsSync('./data')) fs.mkdirSync('./data'); }
 const DATA_DIR = path.join(DISK_ROOT, 'tokens');
