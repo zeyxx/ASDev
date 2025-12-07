@@ -535,6 +535,83 @@ app.get('/api/health', async (req, res) => {
     } catch (e) { res.status(500).json({ error: "DB Error" }); } 
 });
 
+// NEW: Endpoint to fetch all launches
+app.get('/api/all-launches', async (req, res) => {
+    try {
+        // Fetch ALL tokens, ordered by 24h volume descending
+        const rows = await db.all('SELECT * FROM tokens ORDER BY volume24h DESC'); 
+        const allLaunches = await Promise.all(rows.map(async (r) => { 
+            return { 
+                mint: r.mint, 
+                userPubkey: r.userPubkey, // Included creator's pubkey
+                name: r.name, 
+                ticker: r.ticker, 
+                image: r.image, 
+                metadataUri: r.metadataUri, 
+                marketCap: r.marketCap || 0, 
+                volume: r.volume24h, 
+                complete: !!r.complete 
+            }; 
+        })); 
+        res.json({ tokens: allLaunches, lastUpdate: lastBackendUpdate }); 
+    } catch (e) { 
+        logger.error("All Launches Error", { error: e.message });
+        res.status(500).json({ tokens: [], lastUpdate: Date.now() }); 
+    } 
+});
+
+// NEW: Endpoint to fetch all eligible users and their points
+app.get('/api/all-eligible-users', async (req, res) => {
+    try {
+        // 1. Get List of Top 10 Leaderboard Mints (Active)
+        const top10 = await db.all('SELECT mint FROM tokens ORDER BY volume24h DESC LIMIT 10');
+        const top10Mints = top10.map(t => t.mint);
+
+        if (top10Mints.length === 0) {
+            return res.json({ users: [], totalPoints: 0 });
+        }
+
+        // 2. Fetch all holders who hold a top 10 token
+        const placeholders = top10Mints.map(() => '?').join(',');
+        const rows = await db.all(`
+            SELECT holderPubkey, COUNT(*) as positionCount 
+            FROM token_holders 
+            WHERE mint IN (${placeholders}) 
+            GROUP BY holderPubkey
+        `, top10Mints);
+
+        const eligibleUsers = [];
+        let calculatedTotalPoints = 0;
+
+        for (const row of rows) {
+            // EXCLUDE DEV WALLET
+            if (row.holderPubkey === devKeypair.publicKey.toString()) {
+                continue; 
+            }
+            
+            const isAsdfTop50 = asdfTop50Holders.has(row.holderPubkey);
+            const multiplier = isAsdfTop50 ? 2 : 1;
+            const points = row.positionCount * multiplier;
+
+            if (points > 0) {
+                eligibleUsers.push({
+                    pubkey: row.holderPubkey,
+                    points: points,
+                    positions: row.positionCount,
+                    isAsdfTop50: isAsdfTop50
+                });
+                calculatedTotalPoints += points;
+            }
+        }
+
+        res.json({ users: eligibleUsers, totalPoints: calculatedTotalPoints });
+
+    } catch (e) { 
+        logger.error("All Eligible Users Error", {msg: e.message});
+        res.status(500).json({ error: "DB Error" }); 
+    } 
+});
+
 // NEW: Airdrop Logs Endpoint
 app.get('/api/airdrop-logs', async (req, res) => {
     try {

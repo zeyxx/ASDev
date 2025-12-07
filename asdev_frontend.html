@@ -140,9 +140,15 @@
                     <h3 class="text-orange-500 font-mono text-sm uppercase tracking-widest">🔥 TOP 10 LAUNCHES (BY 24H VOL)</h3>
                     <span id="leaderboard-last-updated" class="text-orange-600 text-xs font-mono">Syncing...</span>
                 </div>
-                <button onclick="updateLeaderboard()" class="text-orange-400 hover:text-white transition p-1 rounded hover:bg-orange-800" title="Refresh Leaderboard">
-                    <i data-lucide="refresh-cw" width="16"></i>
-                </button>
+                <!-- UPDATED: Added Expand button -->
+                <div class="flex items-center gap-2">
+                    <button onclick="toggleAllLaunchesModal()" class="text-orange-400 hover:text-white transition p-1 rounded hover:bg-orange-800" title="Expand to All Launches">
+                        <i data-lucide="maximize-2" width="16"></i>
+                    </button>
+                    <button onclick="updateLeaderboard()" class="text-orange-400 hover:text-white transition p-1 rounded hover:bg-orange-800" title="Refresh Leaderboard">
+                        <i data-lucide="refresh-cw" width="16"></i>
+                    </button>
+                </div>
             </div>
             <div class="overflow-x-auto">
                 <table class="leader-table">
@@ -156,7 +162,11 @@
         <div class="panel bg-purple-950/30 border border-purple-800 mt-8 lg:col-span-3">
             <div class="flex justify-between items-center border-b border-purple-800/50 pb-2 mb-4">
                 <h3 class="text-purple-400 font-mono text-sm uppercase tracking-widest">🪂 AIRDROP RESERVES & POINTS</h3>
-                <button onclick="toggleAirdropLogModal()" class="text-purple-400 hover:text-white transition font-mono text-xs underline p-1">VIEW HISTORY</button>
+                <!-- UPDATED: Added Expand Users button next to View History -->
+                <div class="flex items-center gap-4">
+                    <button onclick="toggleAllEligibleUsersModal()" class="text-purple-400 hover:text-white transition font-mono text-xs underline p-1">EXPAND USERS</button>
+                    <button onclick="toggleAirdropLogModal()" class="text-purple-400 hover:text-white transition font-mono text-xs underline p-1">VIEW HISTORY</button>
+                </div>
             </div>
             <div class="flex flex-col md:flex-row items-stretch justify-between gap-6 px-4">
                 <!-- Holdings -->
@@ -239,6 +249,12 @@
 </div>
 
 <div id="log-modal" class="modal"><div class="modal-content"><span class="close-btn" onclick="closeLogModal()">&times;</span><h3 class="text-orange-500 font-mono text-lg mb-4 uppercase tracking-widest border-b border-orange-900/50 pb-2">FULL BUYBACK LOGS</h3><div id="modal-log-content" class="max-h-[60vh] overflow-y-auto pr-2"></div></div></div>
+
+<!-- NEW ALL LAUNCHES MODAL -->
+<div id="all-launches-modal" class="modal"><div class="modal-content"><span class="close-btn" onclick="closeAllLaunchesModal()">&times;</span><h3 class="text-orange-500 font-mono text-lg mb-4 uppercase tracking-widest border-b border-orange-900/50 pb-2">ALL PLATFORM LAUNCHES</h3><div id="modal-all-launches-content" class="max-h-[70vh] overflow-y-auto pr-2">Loading...</div></div></div>
+
+<!-- NEW ALL ELIGIBLE USERS MODAL -->
+<div id="all-eligible-users-modal" class="modal"><div class="modal-content border-purple-600"><span class="close-btn" onclick="closeAllEligibleUsersModal()">&times;</span><h3 class="text-purple-400 font-mono text-lg mb-4 uppercase tracking-widest border-b border-purple-800/50 pb-2">ELIGIBLE AIRDROP USERS & POINTS</h3><div id="modal-all-eligible-users-content" class="max-h-[70vh] overflow-y-auto pr-2">Loading...</div></div></div>
 
 <!-- NEW AIRDROP LOG MODAL -->
 <div id="airdrop-log-modal" class="modal"><div class="modal-content border-purple-600"><span class="close-btn" onclick="closeAirdropLogModal()">&times;</span><h3 class="text-purple-400 font-mono text-lg mb-4 uppercase tracking-widest border-b border-purple-800/50 pb-2">AIRDROP DISTRIBUTION HISTORY</h3><div id="modal-airdrop-log-content" class="max-h-[60vh] overflow-y-auto pr-2">Loading...</div></div></div>
@@ -356,7 +372,12 @@
         userTopPositions: document.getElementById('user-top-positions'), asdfStatus: document.getElementById('asdf-status'),
         userTotalPoints: document.getElementById('user-total-points'), pointsMultiplierBadge: document.getElementById('points-multiplier-badge'),
         expectedAirdrop: document.getElementById('expected-airdrop'),
-        airdropLogModal: document.getElementById('airdrop-log-modal'), modalAirdropLogContent: document.getElementById('modal-airdrop-log-content')
+        airdropLogModal: document.getElementById('airdrop-log-modal'), modalAirdropLogContent: document.getElementById('modal-airdrop-log-content'),
+        // NEW MODAL REFERENCES
+        allLaunchesModal: document.getElementById('all-launches-modal'),
+        modalAllLaunchesContent: document.getElementById('modal-all-launches-content'),
+        allEligibleUsersModal: document.getElementById('all-eligible-users-modal'),
+        modalAllEligibleUsersContent: document.getElementById('modal-all-eligible-users-content')
     };
 
     lucide.createIcons();
@@ -736,6 +757,133 @@
 
     const closeSuccessModal = () => { ui.successModal.style.display = 'none'; };
     window.closeSuccessModal = closeSuccessModal;
+    
+    // --- NEW MODAL FUNCTIONS ---
+
+    // Function for All Launches Modal
+    const toggleAllLaunchesModal = async () => {
+        ui.allLaunchesModal.style.display = 'block';
+        ui.modalAllLaunchesContent.innerHTML = '<div class="text-center text-orange-400 p-4">Fetching all token data...</div>';
+        
+        try {
+            const res = await fetch(`${BACKEND_URL}/api/all-launches`);
+            if (res.ok) {
+                const data = await res.json();
+                const tokens = data.tokens || [];
+                
+                if (tokens.length === 0) {
+                    ui.modalAllLaunchesContent.innerHTML = '<div class="text-center text-gray-500 p-4">No tokens have been launched yet.</div>';
+                    return;
+                }
+                
+                const tableHTML = `
+                    <table class="w-full text-left font-mono text-xs leader-table">
+                        <thead class="text-orange-400 border-b border-orange-800">
+                            <tr><th class="p-2">#</th><th class="p-2">Token</th><th class="p-2">Creator</th><th class="p-2 text-right">MCAP</th><th class="p-2 text-right">Vol (24H)</th><th class="p-2 text-right">Status</th></tr>
+                        </thead>
+                        <tbody class="text-orange-200">
+                            ${await Promise.all(tokens.map(async (item, index) => {
+                                // Re-use existing badge logic for status display
+                                const badge = item.complete ? 
+                                    '<span class="badge-bonded text-xs" style="background-color:#22c55e;">BONDED</span>' : 
+                                    '<span class="badge-bonding text-xs" style="background-color:#eab308;">PRE-BOND</span>';
+                                    
+                                // Try to get image from token data or metadata URI
+                                let imgSrc = item.image;
+                                if ((!imgSrc || imgSrc.trim() === '') && item.metadataUri) {
+                                    try {
+                                        const metaRes = await fetch(item.metadataUri);
+                                        const metaJson = await metaRes.json();
+                                        if (metaJson.image) {
+                                            imgSrc = metaJson.image;
+                                        }
+                                    } catch (e) { /* silent fail */ }
+                                }
+                                if (!imgSrc || imgSrc.trim() === '') {
+                                    imgSrc = 'https://placehold.co/32x32/333/fff?text=?'; 
+                                }
+
+                                return `
+                                <tr class="border-b border-orange-800/30 hover:bg-orange-900/20">
+                                    <td class="p-2">${index + 1}</td>
+                                    <td class="p-2">
+                                        <img src="${imgSrc}" onerror="this.src='https://placehold.co/32x32/333/fff?text=?'" class="token-img-sm" alt="icon">
+                                        <a href="${PUMPFUN_URL_BASE}${item.mint}" target="_blank" class="font-bold underline text-white">${item.ticker}</a> (${item.name})
+                                    </td>
+                                    <td class="p-2 text-orange-400">${item.userPubkey.slice(0, 5)}...</td>
+                                    <td class="p-2 text-right font-bold text-green-400">${formatMcap(item.marketCap)}</td>
+                                    <td class="p-2 text-right font-bold">$${(parseFloat(item.volume) || 0).toLocaleString()}</td>
+                                    <td class="p-2 text-right">${badge}</td>
+                                </tr>
+                                `;
+                            })).then(rows => rows.join(''))}
+                        </tbody>
+                    </table>
+                `;
+                ui.modalAllLaunchesContent.innerHTML = tableHTML;
+            } else {
+                throw new Error("Failed to fetch all launches.");
+            }
+        } catch(e) {
+            ui.modalAllLaunchesContent.innerHTML = `<div class="text-center text-red-400 p-4">Error: ${e.message}</div>`;
+        }
+    };
+    window.toggleAllLaunchesModal = toggleAllLaunchesModal;
+    const closeAllLaunchesModal = () => { ui.allLaunchesModal.style.display = 'none'; };
+    window.closeAllLaunchesModal = closeAllLaunchesModal;
+
+    // Function for All Eligible Users Modal
+    const toggleAllEligibleUsersModal = async () => {
+        ui.allEligibleUsersModal.style.display = 'block';
+        ui.modalAllEligibleUsersContent.innerHTML = '<div class="text-center text-purple-400 p-4">Calculating all eligible users...</div>';
+
+        try {
+            const res = await fetch(`${BACKEND_URL}/api/all-eligible-users`);
+            if (res.ok) {
+                const data = await res.json();
+                const users = data.users || [];
+                
+                if (users.length === 0) {
+                    ui.modalAllEligibleUsersContent.innerHTML = '<div class="text-center text-gray-500 p-4">No users currently qualify for the airdrop (0 global points).</div>';
+                    return;
+                }
+                
+                const tableHTML = `
+                    <p class="text-purple-300 font-mono text-sm mb-4">Total Global Points: <span class="text-white font-bold">${data.totalPoints.toLocaleString()}</span> | Total Eligible Users: <span class="text-white font-bold">${users.length}</span></p>
+                    <table class="w-full text-left font-mono text-xs">
+                        <thead class="text-purple-400 border-b border-purple-800">
+                            <tr><th class="p-2">#</th><th class="p-2">Wallet (Snippet)</th><th class="p-2 text-right">Positions</th><th class="p-2 text-right">Multiplier</th><th class="p-2 text-right">Points</th></tr>
+                        </thead>
+                        <tbody class="text-purple-200">
+                            ${users.sort((a, b) => b.points - a.points).map((user, index) => {
+                                const multiplierBadge = user.isAsdfTop50 
+                                    ? '<span class="px-2 py-0.5 bg-green-500/20 border border-green-500 rounded text-[9px] text-green-400 font-bold">2X (ASDF)</span>' 
+                                    : '<span class="px-2 py-0.5 bg-gray-500/20 border border-gray-500 rounded text-[9px] text-gray-400 font-bold">1X</span>';
+                                    
+                                return `
+                                <tr class="border-b border-purple-800/30 hover:bg-purple-900/20">
+                                    <td class="p-2">${index + 1}</td>
+                                    <td class="p-2 text-white font-bold">${user.pubkey.slice(0, 5)}...</td>
+                                    <td class="p-2 text-right">${user.positions}</td>
+                                    <td class="p-2 text-right">${multiplierBadge}</td>
+                                    <td class="p-2 text-right text-yellow-400 font-bold text-lg">${user.points}</td>
+                                </tr>
+                                `;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                `;
+                ui.modalAllEligibleUsersContent.innerHTML = tableHTML;
+            } else {
+                throw new Error("Failed to fetch eligible users.");
+            }
+        } catch(e) {
+            ui.modalAllEligibleUsersContent.innerHTML = `<div class="text-center text-red-400 p-4">Error: ${e.message}</div>`;
+        }
+    };
+    window.toggleAllEligibleUsersModal = toggleAllEligibleUsersModal;
+    const closeAllEligibleUsersModal = () => { ui.allEligibleUsersModal.style.display = 'none'; };
+    window.closeAllEligibleUsersModal = closeAllEligibleUsersModal;
 
     const toggleLogModal = () => { ui.modalLogContent.innerHTML = ''; 
         if(allLogs && allLogs.length > 0) {
