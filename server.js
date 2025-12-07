@@ -16,7 +16,7 @@ const IORedis = require('ioredis');
 const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, createCloseAccountInstruction, createTransferInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.26.10-FEE-TRACKER-UPDATE";
+const VERSION = "v10.26.11-DEBUG-AIRDROP-ZERO";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -686,6 +686,9 @@ app.get('/api/check-holder', async (req, res) => {
         
         // FIX: Retrieve expected airdrop value from the global cache map
         const totalExpectedAirdrop = globalUserExpectedAirdrops.get(userPubkey) || 0;
+        
+        // DEBUG: Explicitly Log what is being returned for this user
+        logger.info("Check Holder:", { user: userPubkey, expected: totalExpectedAirdrop, inMap: globalUserExpectedAirdrops.has(userPubkey) });
 
         res.json({ 
             isHolder: heldPositionsCount > 0, 
@@ -796,6 +799,10 @@ async function updateGlobalState() {
         } catch(e) { devPumpHoldings = 0; }
         const distributableAmount = devPumpHoldings * 0.99;
         
+        // DEBUG: LOG CRITICAL VALUES
+        logger.info("DEBUG: Dev Pump Holdings:", devPumpHoldings);
+        logger.info("DEBUG: Distributable Amount:", distributableAmount);
+        
         // 1B. Update Individual Token Holders
         for (const token of topTokens) { 
             try { 
@@ -879,17 +886,21 @@ async function updateGlobalState() {
             }
         }
         globalTotalPoints = tempTotalPoints;
-        logger.info(`Updated Global Points: ${globalTotalPoints} | Distributable: ${distributableAmount}`);
-
+        
+        // DEBUG: LOG POINTS AND MAP SIZE
+        logger.info(`DEBUG: Global Points: ${globalTotalPoints}`);
+        
         // --- UPDATE GLOBAL CACHE FOR EXPECTED AIRDROP ---
         globalUserExpectedAirdrops.clear();
-        if (globalTotalPoints > 0) {
+        if (globalTotalPoints > 0 && distributableAmount > 0) {
             for (const [pubkey, points] of userPointMap.entries()) {
                 const share = points / globalTotalPoints;
                 const expectedAirdrop = share * distributableAmount;
                 globalUserExpectedAirdrops.set(pubkey, expectedAirdrop);
             }
         }
+        
+        logger.info(`DEBUG: User Map Size: ${globalUserExpectedAirdrops.size}`);
         // No DB transaction needed for expectedAirdrop calculation, as it's cached in memory map.
 
     } catch(e) { console.error("Loop Error", e); }
