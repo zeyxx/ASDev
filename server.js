@@ -22,6 +22,8 @@ const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
 const PRIORITY_FEE_MICRO_LAMPORTS = 100000; 
 const DEPLOYMENT_FEE_SOL = 0.02;
+// NEW: Define Fee Threshold used by Flywheel logic
+const FEE_THRESHOLD_SOL = 0.20; 
 
 // Update Intervals (Env Vars or Default)
 const HOLDER_UPDATE_INTERVAL = process.env.HOLDER_UPDATE_INTERVAL ? parseInt(process.env.HOLDER_UPDATE_INTERVAL) : 120000;
@@ -247,7 +249,7 @@ async function logPurchase(type, data) {
 
 async function saveTokenData(pk, mint, meta) {
     try {
-        await db.run(`INSERT INTO tokens (mint, userPubkey, name, ticker, description, twitter, website, image, isMayhemMode, metadataUri) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, 
+        await db.run(`INSERT INTO tokens (mint, userPubkey, name, ticker TEXT, description TEXT, twitter TEXT, website TEXT, image TEXT, isMayhemMode BOOLEAN, metadataUri) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, 
             [mint, pk, meta.name, meta.ticker, meta.description, meta.twitter, meta.website, meta.image, meta.isMayhemMode, meta.metadataUri]);
         const shard = pk.slice(0, 2).toLowerCase(); const dir = path.join(ACTIVE_DATA_DIR, shard); ensureDir(dir);
         fs.writeFileSync(path.join(dir, `${mint}.json`), JSON.stringify({ userPubkey: pk, mint, metadata: meta, timestamp: new Date().toISOString() }, null, 2));
@@ -389,7 +391,7 @@ if (redisConnection) {
                     const sellDiscriminator = Buffer.from([51, 230, 133, 164, 1, 127, 131, 173]);
                     const sellAmountBuf = new BN(bal.value.amount).toArrayLike(Buffer, 'le', 8);
                     const minSolOutputBuf = new BN(0).toArrayLike(Buffer, 'le', 8);
-                    const sellData = Buffer.concat([sellDiscriminator, sellAmountBuf, minSolOutputBuf]);
+                    const sellData = Buffer.concat([sellDiscriminator, sellAmountBuf, minAmountOutBuf]);
 
                     const sellKeys = [
                         { pubkey: global, isSigner: false, isWritable: false },
@@ -758,9 +760,10 @@ setInterval(async () => {
                 if (!token.mint) continue;
                 
                 const tokenMintPublicKey = new PublicKey(token.mint);
-                // Calculate Bonding Curve PDA owner and its associated token account (ATA)
+                // CRITICAL FIX: Calculate the unique Bonding Curve PDA for this token
                 const [bondingCurvePDA] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), tokenMintPublicKey.toBuffer()], PUMP_PROGRAM_ID);
-                const associatedBondingCurveATA = await getAssociatedTokenAddress(tokenMintPublicKey, bondingCurvePDA, true);
+                const bondingCurvePDAStr = bondingCurvePDA.toString();
+
                 
                 // 1. Fetch data from blockchain FIRST (In Memory)
                 const accounts = await connection.getTokenLargestAccounts(tokenMintPublicKey); 
@@ -768,15 +771,17 @@ setInterval(async () => {
 
                 if (accounts.value) { 
                     const top20 = accounts.value.slice(0, 20); 
+
                     for (const acc of top20) { 
                         try { 
                             const info = await connection.getParsedAccountInfo(acc.address); 
                             if (info.value?.data?.parsed) { 
                                 const owner = info.value.data.parsed.info.owner; 
                                 
-                                // EXCLUDE 1: PUMP LIQUIDITY WALLET (Constant)
-                                // EXCLUDE 2: BONDING CURVE ATA OWNER (Dynamic per token)
-                                if (owner !== PUMP_LIQUIDITY_WALLET && acc.address.toString() !== associatedBondingCurveATA.toString()) { 
+                                // REFINED EXCLUSION LOGIC: 
+                                // Exclude 1. PUMP Liquidity Wallet (Constant)
+                                // Exclude 2. The Bonding Curve PDA (the owner of the pre-bond LP tokens)
+                                if (owner !== PUMP_LIQUIDITY_WALLET && owner !== bondingCurvePDAStr) { 
                                     holdersToInsert.push({ mint: token.mint, owner: owner }); 
                                 } 
                             } 
@@ -814,13 +819,13 @@ setInterval(async () => {
         // --- CALCULATE GLOBAL TOTAL POINTS ---
         if (top10Mints.length > 0) {
             const placeholders = top10Mints.map(() => '?').join(',');
-            // The table only contains non-LP holders now, simplifying point calculation here
+            // The table now strictly contains only user holders (excluding LPs/Bonding Curve/Dev Wallet)
             const rows = await db.all(`SELECT holderPubkey, COUNT(*) as positionCount FROM token_holders WHERE mint IN (${placeholders}) GROUP BY holderPubkey`, top10Mints);
             
             let tempTotalPoints = 0;
             for (const row of rows) {
                 const isTop50 = asdfTop50Holders.has(row.holderPubkey);
-                // EXCLUDE DEV WALLET FROM ACCRUING POINTS FOR ITS RESERVES
+                // EXCLUDE DEV WALLET FROM ACCRUING POINTS FOR ITS RESERVES (Safety check, though filtered above too)
                 if (row.holderPubkey !== devKeypair.publicKey.toString()) {
                     const points = row.positionCount * (isTop50 ? 2 : 1);
                     tempTotalPoints += points;
