@@ -523,9 +523,16 @@
     };
     window.updateLeaderboard = updateLeaderboard;
 
-    // Fallback/Display function for Expected Airdrop
+    // Fix: Updated to handle small, non-zero values by using higher precision display.
     const updateExpectedAirdropDisplay = (expectedAmount) => {
-        ui.expectedAirdrop.innerText = parseFloat(expectedAmount).toLocaleString('en-US', {maximumFractionDigits: 2});
+        const amount = parseFloat(expectedAmount);
+        if (amount > 0 && amount < 0.1) { // If amount is small (e.g., < 0.1 PUMP)
+            // Use high precision (e.g., 6 significant digits) to prevent rounding to 0.00
+            ui.expectedAirdrop.innerText = amount.toPrecision(6);
+        } else {
+            // Otherwise, use standard formatting (max 2 decimal places, for larger amounts)
+            ui.expectedAirdrop.innerText = amount.toLocaleString('en-US', {maximumFractionDigits: 2});
+        }
     };
     
     // Removed unused call

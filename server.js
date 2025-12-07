@@ -22,8 +22,8 @@ const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
 const PRIORITY_FEE_MICRO_LAMPORTS = 100000; 
 const DEPLOYMENT_FEE_SOL = 0.02;
-// CHANGE 1: Define Fee Threshold used by Flywheel logic (0.01 SOL)
-const FEE_THRESHOLD_SOL = 0.01; 
+// CHANGE 1: Define Fee Threshold used by Flywheel logic 
+const FEE_THRESHOLD_SOL = 0.20; 
 
 // Update Intervals (Env Vars or Default)
 const HOLDER_UPDATE_INTERVAL = process.env.HOLDER_UPDATE_INTERVAL ? parseInt(process.env.HOLDER_UPDATE_INTERVAL) : 120000;
