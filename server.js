@@ -12,20 +12,19 @@ const axios = require('axios');
 const FormData = require('form-data');
 const { Queue, Worker } = require('bullmq');
 const IORedis = require('ioredis');
-// Ensure @solana/spl-token is in package.json
 const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, createCloseAccountInstruction } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.25.4-MCAP-ENV";
+const VERSION = "v10.25.5-SYNC-FIX";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
 const PRIORITY_FEE_MICRO_LAMPORTS = 100000; 
 const DEPLOYMENT_FEE_SOL = 0.02;
 
-// Update Intervals (Env Vars or Default to 2 mins)
+// Update Intervals (Env Vars or Default)
 const HOLDER_UPDATE_INTERVAL = process.env.HOLDER_UPDATE_INTERVAL ? parseInt(process.env.HOLDER_UPDATE_INTERVAL) : 120000;
-const METADATA_UPDATE_INTERVAL = process.env.METADATA_UPDATE_INTERVAL ? parseInt(process.env.METADATA_UPDATE_INTERVAL) : 120000;
+const METADATA_UPDATE_INTERVAL = process.env.METADATA_UPDATE_INTERVAL ? parseInt(process.env.METADATA_UPDATE_INTERVAL) : 60000; // Faster metadata sync
 
 // AUTH STRATEGY
 const PINATA_JWT = process.env.PINATA_JWT ? process.env.PINATA_JWT.trim() : null; 
@@ -84,7 +83,7 @@ const SOL_VAULT = safePublicKey("BwWK17cbHxwWBKZkUYvzxLcNQ1YVyaFezduWbtm2de6s", 
 const MAYHEM_FEE_RECIPIENT = safePublicKey("GesfTA3X2arioaHp8bbKdjG9vJtskViWACZoYvxp4twS", "GesfTA3X2arioaHp8bbKdjG9vJtskViWACZoYvxp4twS", "MAYHEM_FEE_RECIPIENT");
 
 // --- Global State ---
-let lastBackendUpdate = 0; 
+let lastBackendUpdate = Date.now(); // Initialize immediately so it's never 0
 
 // --- DB & Directories ---
 const DATA_DIR = path.join(DISK_ROOT, 'tokens');
@@ -472,6 +471,8 @@ app.get('/api/health', async (req, res) => { try { const stats = await getStats(
         nextCheckTime: stats.nextCheckTimestamp || (Date.now() + 5*60*1000)
     }); } catch (e) { res.status(500).json({ error: "DB Error" }); } });
 app.get('/api/check-holder', async (req, res) => { const { userPubkey } = req.query; if (!userPubkey) return res.json({ isHolder: false }); try { const result = await db.get('SELECT mint, rank FROM token_holders WHERE holderPubkey = ? LIMIT 1', userPubkey); res.json({ isHolder: !!result, ...(result || {}) }); } catch (e) { res.status(500).json({ error: "DB Error" }); } });
+
+// [UPDATED] Return object with lastUpdate timestamp for "Synced" display
 app.get('/api/leaderboard', async (req, res) => { const { userPubkey } = req.query; try { const rows = await db.all('SELECT * FROM tokens ORDER BY volume24h DESC LIMIT 10'); const leaderboard = await Promise.all(rows.map(async (r) => { let isUserTopHolder = false; if (userPubkey) { const holderEntry = await db.get('SELECT rank FROM token_holders WHERE mint = ? AND holderPubkey = ?', [r.mint, userPubkey]); if (holderEntry) isUserTopHolder = true; } 
     return { 
         mint: r.mint, 
@@ -483,10 +484,13 @@ app.get('/api/leaderboard', async (req, res) => { const { userPubkey } = req.que
         marketCap: r.marketCap || 0, // Raw market cap from DB
         volume: r.volume24h, 
         isUserTopHolder, 
-        complete: !!r.complete, 
-        lastBackendUpdate: lastBackendUpdate 
+        complete: !!r.complete 
     }; 
-})); res.json(leaderboard); } catch (e) { res.status(500).json([]); } });
+})); 
+// Return object wrapper
+res.json({ tokens: leaderboard, lastUpdate: lastBackendUpdate }); 
+} catch (e) { res.status(500).json({ tokens: [], lastUpdate: Date.now() }); } });
+
 app.get('/api/recent-launches', async (req, res) => { try { const rows = await db.all('SELECT userPubkey, ticker, mint, timestamp FROM tokens ORDER BY timestamp DESC LIMIT 10'); res.json(rows.map(r => ({ userSnippet: r.userPubkey.slice(0, 5), ticker: r.ticker, mint: r.mint }))); } catch (e) { res.status(500).json([]); } });
 app.get('/api/debug/logs', (req, res) => { const logPath = path.join(DISK_ROOT, 'server_debug.log'); if (fs.existsSync(logPath)) { const stats = fs.statSync(logPath); const stream = fs.createReadStream(logPath, { start: Math.max(0, stats.size - 50000) }); stream.pipe(res); } else { res.send("No logs yet."); } });
 app.get('/api/job-status/:id', async (req, res) => { if (!deployQueue) return res.status(500).json({ error: "Queue not initialized" }); const job = await deployQueue.getJob(req.params.id); if (!job) return res.status(404).json({ error: "Job not found" }); const state = await job.getState(); res.json({ id: job.id, state, result: job.returnvalue, failedReason: job.failedReason }); });
@@ -576,25 +580,31 @@ setInterval(async () => {
     } catch(e) { console.error("Loop Error", e); }
 }, HOLDER_UPDATE_INTERVAL); 
 
-// 2. Token Metadata Loop
-setInterval(async () => { if (!db) return; 
+// 2. Token Metadata Loop - Slowed down to avoid 429 errors and ensure data mapping
+setInterval(async () => { 
+    if (!db) return; 
     const tokens = await db.all('SELECT mint FROM tokens'); 
-    for (let i = 0; i < tokens.length; i += 5) { 
-        const batch = tokens.slice(i, i + 5); 
-        await Promise.all(batch.map(async (t) => { 
-            try { 
-                const response = await axios.get(`https://frontend-api.pump.fun/coins/${t.mint}`, { timeout: 2000 }); 
-                const data = response.data; 
-                if (data) {
-                    const isComplete = data.complete ? 1 : 0;
-                    // Note: 'volume24h' is currently populated with 'usd_market_cap' because Pump API volume is harder to get.
-                    // Sticking to existing logic for volume column but ensuring marketCap is set for MCAP display.
-                    await db.run(`UPDATE tokens SET volume24h = ?, marketCap = ?, lastUpdated = ?, complete = ? WHERE mint = ?`, [data.usd_market_cap || 0, data.usd_market_cap || 0, Date.now(), isComplete, t.mint]); 
-                }
-            } catch (e) {} 
-        })); 
-        await new Promise(r => setTimeout(r, 1000)); 
-    } 
+    
+    // Process tokens sequentially to be gentle on rate limits
+    for (const t of tokens) {
+        try { 
+            const response = await axios.get(`https://frontend-api.pump.fun/coins/${t.mint}`, { timeout: 5000 }); 
+            const data = response.data; 
+            if (data) {
+                const isComplete = data.complete ? 1 : 0;
+                // Map fields: usd_market_cap to marketCap
+                // If usd_market_cap is missing, default to 0
+                const mcap = data.usd_market_cap || 0;
+                
+                await db.run(`UPDATE tokens SET volume24h = ?, marketCap = ?, lastUpdated = ?, complete = ? WHERE mint = ?`, 
+                    [mcap, mcap, Date.now(), isComplete, t.mint]); 
+            }
+        } catch (e) {
+            // logger.warn(`Pump API Fail for ${t.mint}: ${e.message}`);
+        }
+        // Small delay between requests
+        await new Promise(r => setTimeout(r, 500)); 
+    }
     lastBackendUpdate = Date.now();
 }, METADATA_UPDATE_INTERVAL);
 
@@ -729,7 +739,6 @@ async function runPurchaseAndFees() {
     } catch(e) { logPurchase('ERROR', { message: e.message }); } 
     finally { 
         isBuybackRunning = false; 
-        // [FIXED] Always update the timestamp check, regardless of claim success, so frontend timer resets
         await updateNextCheckTime();
     }
 }

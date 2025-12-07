@@ -279,15 +279,19 @@
             const res = await fetch(endpoint);
             const data = await res.json();
             
-            if (data && data.length > 0 && data[0].lastBackendUpdate) {
-                 const backendTime = new Date(data[0].lastBackendUpdate).toLocaleTimeString();
+            // Handle the structured response from updated backend
+            const tokens = data.tokens || [];
+            const lastUpdate = data.lastUpdate;
+
+            if (lastUpdate) {
+                 const backendTime = new Date(lastUpdate).toLocaleTimeString();
                  ui.leaderboardLastUpdated.innerText = `Synced: ${backendTime}`;
             } else {
                  ui.leaderboardLastUpdated.innerText = `Synced: ${new Date().toLocaleTimeString()}`;
             }
 
-            if (!data || data.length === 0) { ui.leaderboardBody.innerHTML = '<tr><td colspan="6" class="text-center text-orange-400 py-4">No active tokens found.</td></tr>'; return; }
-            ui.leaderboardBody.innerHTML = await Promise.all(data.map(async (item, index) => {
+            if (!tokens || tokens.length === 0) { ui.leaderboardBody.innerHTML = '<tr><td colspan="6" class="text-center text-orange-400 py-4">No active tokens found.</td></tr>'; return; }
+            ui.leaderboardBody.innerHTML = await Promise.all(tokens.map(async (item, index) => {
                 let displayMcap = item.marketCap; // Default from backend (Pump API)
                 let displayVol = parseFloat(item.volume);
                 
@@ -297,16 +301,14 @@
                 // If complete (Post-Bond), attempt to fetch real data from DexScreener
                 if (item.complete) {
                     badge = `<span class="badge-bonded" title="Bonding Curve Complete">BONDED</span>`;
-                    tradeLink = `${PUMPFUN_URL_BASE}${item.mint}`; // Or Raydium link if preferred
+                    tradeLink = `${PUMPFUN_URL_BASE}${item.mint}`; 
                     try {
                         const dexRes = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${item.mint}`);
                         const dexData = await dexRes.json();
                         if (dexData.pairs && dexData.pairs.length > 0) {
                             const pair = dexData.pairs[0];
-                            // Use FDV for MCAP on migrated tokens
                             if (pair.fdv) displayMcap = pair.fdv;
                             else if (pair.marketCap) displayMcap = pair.marketCap;
-                            
                             displayVol = pair.volume.h24;
                         }
                     } catch (e) { console.error("DEX fetch failed", e); }
