@@ -12,10 +12,10 @@ const axios = require('axios');
 const FormData = require('form-data');
 const { Queue, Worker } = require('bullmq');
 const IORedis = require('ioredis');
-const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, createCloseAccountInstruction } = require('@solana/spl-token');
+const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, createCloseAccountInstruction, createTransferInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.25.10-POINTS-SYSTEM";
+const VERSION = "v10.25.11-AUTO-AIRDROP";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -70,7 +70,6 @@ const FEE_THRESHOLD_SOL = 0.20;
 const PUMP_PROGRAM_ID = safePublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "11111111111111111111111111111111", "PUMP_PROGRAM_ID");
 const PUMP_AMM_PROGRAM_ID = safePublicKey("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", "PUMP_AMM_PROGRAM_ID");
 const TOKEN_PROGRAM_2022_ID = safePublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", "TOKEN_PROGRAM_2022_ID");
-const TOKEN_PROGRAM_ID = safePublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TOKEN_PROGRAM_ID");
 const ASSOCIATED_TOKEN_PROGRAM_ID = safePublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", "11111111111111111111111111111111", "ASSOCIATED_TOKEN_PROGRAM_ID");
 const WSOL_MINT = safePublicKey("So11111111111111111111111111111111111111112", "So11111111111111111111111111111111111111112", "WSOL_MINT");
 
@@ -88,6 +87,8 @@ const MAYHEM_FEE_RECIPIENT = safePublicKey("GesfTA3X2arioaHp8bbKdjG9vJtskViWACZo
 // --- Global State ---
 let lastBackendUpdate = Date.now(); 
 let asdfTop50Holders = new Set(); // Store top 50 holder public keys
+let isBuybackRunning = false;
+let isAirdropping = false;
 
 // --- DB & Directories ---
 const DATA_DIR = path.join(DISK_ROOT, 'tokens');
@@ -113,6 +114,7 @@ async function initDB() {
         CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, data TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS stats (key TEXT PRIMARY KEY, value REAL);
         CREATE TABLE IF NOT EXISTS token_holders (mint TEXT, holderPubkey TEXT, rank INTEGER, lastUpdated INTEGER, PRIMARY KEY (mint, holderPubkey));
+        CREATE TABLE IF NOT EXISTS airdrops (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL, recipients INTEGER, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('accumulatedFeesLamports', 0);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('lifetimeFeesLamports', 0);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('totalPumpBoughtLamports', 0);
@@ -738,8 +740,6 @@ setTimeout(async () => {
 }, 5000);
 
 
-let isBuybackRunning = false;
-
 // --- Helper for fee addresses ---
 function getCreatorFeeVaults(creator) {
     const [bcVault] = PublicKey.findProgramAddressSync([Buffer.from("creator-vault"), creator.toBuffer()], PUMP_PROGRAM_ID);
@@ -775,15 +775,7 @@ async function claimCreatorFees() {
 
     // 2. Claim AMM Fees (WSOL)
     try {
-        // Need to check if the ATA exists and has balance
-        // Actually, we can check balance via getAccountInfo
-        // If it exists, claim.
-        // We assume we have created canonical pools or migrated tokens.
-        // For AMM claim, we need "quote_mint", "coin_creator", "vault_auth", "vault_ata", "dest_token_account"
-        // Destination: Our WSOL ATA.
         const myWsolAta = await getAssociatedTokenAddress(WSOL_MINT, devKeypair.publicKey);
-        
-        // Ensure our WSOL ATA exists (create if not)
         try { await getAccount(connection, myWsolAta); } 
         catch (error) { 
             tx.add(createAssociatedTokenAccountInstruction(devKeypair.publicKey, myWsolAta, devKeypair.publicKey, WSOL_MINT));
@@ -807,8 +799,6 @@ async function claimCreatorFees() {
                 { pubkey: PUMP_AMM_PROGRAM_ID, isSigner: false, isWritable: false }
             ];
             tx.add(new TransactionInstruction({ keys, programId: PUMP_AMM_PROGRAM_ID, data: ammDiscriminator }));
-            
-            // Unwrap the WSOL to SOL
             tx.add(createCloseAccountInstruction(myWsolAta, devKeypair.publicKey, devKeypair.publicKey));
             claimedSomething = true;
         }
@@ -820,6 +810,114 @@ async function claimCreatorFees() {
         return true;
     }
     return false;
+}
+
+// --- NEW AUTOMATED AIRDROP LOGIC ---
+async function processAirdrop() {
+    if (isAirdropping) return;
+    isAirdropping = true;
+    try {
+        // 1. Check Balance
+        const devPumpAta = await getAssociatedTokenAddress(TARGET_PUMP_TOKEN, devKeypair.publicKey);
+        let balance = 0;
+        try {
+            const info = await connection.getTokenAccountBalance(devPumpAta);
+            balance = info.value.uiAmount; // Float
+        } catch(e) { return; } // No ATA or error
+
+        if (balance <= 10000) return;
+
+        logger.info(`🔥 AIRDROP TRIGGERED: Balance ${balance} PUMP > 10,000`);
+
+        // 2. Calculate Distributable
+        const amountToDistribute = balance * 0.99;
+        const amountToDistributeInt = new BN(amountToDistribute * 1000000); // 6 decimals
+
+        // 3. Get Eligible Users
+        const top10 = await db.all('SELECT mint FROM tokens ORDER BY volume24h DESC LIMIT 10');
+        if (top10.length === 0) return;
+        
+        const top10Mints = top10.map(t => t.mint);
+        const placeholders = top10Mints.map(() => '?').join(',');
+        
+        const rows = await db.all(`
+            SELECT holderPubkey, COUNT(*) as positionCount 
+            FROM token_holders 
+            WHERE mint IN (${placeholders}) 
+            GROUP BY holderPubkey
+        `, top10Mints);
+
+        if (rows.length === 0) return;
+
+        // 4. Calculate Points
+        let totalPoints = 0;
+        const userPoints = [];
+
+        for (const row of rows) {
+            const isTop50 = asdfTop50Holders.has(row.holderPubkey);
+            const points = row.positionCount * (isTop50 ? 2 : 1);
+            if (points > 0) {
+                userPoints.push({ pubkey: new PublicKey(row.holderPubkey), points });
+                totalPoints += points;
+            }
+        }
+
+        if (totalPoints === 0) return;
+
+        logger.info(` distributing ${amountToDistribute} PUMP to ${userPoints.length} users (Total Points: ${totalPoints})`);
+
+        // 5. Build Transactions
+        const BATCH_SIZE = 8; 
+        let currentBatch = [];
+        
+        for (const user of userPoints) {
+            const share = amountToDistributeInt.mul(new BN(user.points)).div(new BN(totalPoints));
+            if (share.eqn(0)) continue;
+
+            currentBatch.push({ user: user.pubkey, amount: share });
+
+            if (currentBatch.length >= BATCH_SIZE) {
+                await sendAirdropBatch(currentBatch, devPumpAta);
+                currentBatch = [];
+                await new Promise(r => setTimeout(r, 1000)); // Rate limit protection
+            }
+        }
+
+        if (currentBatch.length > 0) {
+            await sendAirdropBatch(currentBatch, devPumpAta);
+        }
+
+        // Log Airdrop
+        await db.run('INSERT INTO airdrops (amount, recipients, timestamp) VALUES (?, ?, ?)', [amountToDistribute, userPoints.length, new Date().toISOString()]);
+
+    } catch (e) {
+        logger.error("Airdrop Failed", { error: e.message });
+    } finally {
+        isAirdropping = false;
+    }
+}
+
+async function sendAirdropBatch(batch, sourceAta) {
+    const tx = new Transaction();
+    addPriorityFee(tx);
+
+    const atas = await Promise.all(batch.map(i => getAssociatedTokenAddress(TARGET_PUMP_TOKEN, i.user)));
+    const infos = await connection.getMultipleAccountsInfo(atas);
+    
+    batch.forEach((item, idx) => {
+        const ata = atas[idx];
+        if (!infos[idx]) {
+            tx.add(createAssociatedTokenAccountInstruction(devKeypair.publicKey, ata, item.user, TARGET_PUMP_TOKEN));
+        }
+        tx.add(createTransferInstruction(sourceAta, ata, devKeypair.publicKey, BigInt(item.amount.toString())));
+    });
+
+    try {
+        await sendTxWithRetry(tx, [devKeypair]);
+        logger.info(`Batch sent to ${batch.length} users`);
+    } catch(e) {
+        logger.error(`Batch failed`, {e: e.message});
+    }
 }
 
 async function runPurchaseAndFees() {
@@ -863,9 +961,11 @@ async function runPurchaseAndFees() {
 
                  await buyViaPumpAmm(solBuyAmountLamports, transfer9_5, transfer0_5, spendable);
              }
-        } else {
-            // logPurchase('SKIPPED', { reason: 'Pending Fees Below Threshold', current: totalPendingFees.toString(), target: threshold.toString() });
-        }
+        } 
+        
+        // --- RUN AIRDROP CHECK ---
+        await processAirdrop();
+
     } catch(e) { logPurchase('ERROR', { message: e.message }); } 
     finally { 
         isBuybackRunning = false; 
