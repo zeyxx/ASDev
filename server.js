@@ -15,7 +15,7 @@ const IORedis = require('ioredis');
 const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, createCloseAccountInstruction, createTransferInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.25.11-AUTO-AIRDROP";
+const VERSION = "v10.25.12-AIRDROP-UI";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -70,6 +70,7 @@ const FEE_THRESHOLD_SOL = 0.20;
 const PUMP_PROGRAM_ID = safePublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "11111111111111111111111111111111", "PUMP_PROGRAM_ID");
 const PUMP_AMM_PROGRAM_ID = safePublicKey("pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", "PUMP_AMM_PROGRAM_ID");
 const TOKEN_PROGRAM_2022_ID = safePublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", "TOKEN_PROGRAM_2022_ID");
+const TOKEN_PROGRAM_ID = safePublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TOKEN_PROGRAM_ID");
 const ASSOCIATED_TOKEN_PROGRAM_ID = safePublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", "11111111111111111111111111111111", "ASSOCIATED_TOKEN_PROGRAM_ID");
 const WSOL_MINT = safePublicKey("So11111111111111111111111111111111111111112", "So11111111111111111111111111111111111111112", "WSOL_MINT");
 
@@ -86,9 +87,10 @@ const MAYHEM_FEE_RECIPIENT = safePublicKey("GesfTA3X2arioaHp8bbKdjG9vJtskViWACZo
 
 // --- Global State ---
 let lastBackendUpdate = Date.now(); 
-let asdfTop50Holders = new Set(); // Store top 50 holder public keys
+let asdfTop50Holders = new Set(); 
 let isBuybackRunning = false;
 let isAirdropping = false;
+let globalTotalPoints = 0; // Tracks total score of all users for airdrop calculation
 
 // --- DB & Directories ---
 const DATA_DIR = path.join(DISK_ROOT, 'tokens');
@@ -479,6 +481,7 @@ app.get('/api/health', async (req, res) => { try { const stats = await getStats(
         lifetimeFees: (stats.lifetimeFeesLamports / LAMPORTS_PER_SOL).toFixed(4), 
         totalPumpBought: (stats.totalPumpBoughtLamports / LAMPORTS_PER_SOL).toFixed(4), 
         pumpHoldings: pumpHoldings,
+        totalPoints: globalTotalPoints, // Send global points for frontend calculation
         totalLaunches: launches, 
         recentLogs: logs.map(l => ({ ...JSON.parse(l.data), type: l.type, timestamp: l.timestamp })), 
         headerImageUrl: HEADER_IMAGE_URL,
@@ -610,11 +613,14 @@ app.post('/api/deploy', async (req, res) => {
 
 // Loops
 
-// 1. Holder Scanner Loop (Internal Launches)
+// 1. Holder Scanner Loop (Internal Launches) + GLOBAL POINTS CALCULATION
 setInterval(async () => { 
     if (!db) return; 
     try {
         const topTokens = await db.all('SELECT mint FROM tokens ORDER BY volume24h DESC LIMIT 10'); 
+        const top10Mints = topTokens.map(t => t.mint);
+        
+        // Update Individual Token Holders
         for (const token of topTokens) { 
             try { 
                 if (!token.mint) continue;
@@ -634,8 +640,26 @@ setInterval(async () => {
                     } 
                 } 
             } catch (e) { console.error("Error processing token", token.mint, e.message); } 
-            await new Promise(r => setTimeout(r, 2000)); 
-        } 
+            await new Promise(r => setTimeout(r, 1000)); 
+        }
+
+        // --- CALCULATE GLOBAL TOTAL POINTS ---
+        if (top10Mints.length > 0) {
+            const placeholders = top10Mints.map(() => '?').join(',');
+            const rows = await db.all(`SELECT holderPubkey, COUNT(*) as positionCount FROM token_holders WHERE mint IN (${placeholders}) GROUP BY holderPubkey`, top10Mints);
+            
+            let tempTotalPoints = 0;
+            for (const row of rows) {
+                const isTop50 = asdfTop50Holders.has(row.holderPubkey);
+                const points = row.positionCount * (isTop50 ? 2 : 1);
+                tempTotalPoints += points;
+            }
+            globalTotalPoints = tempTotalPoints;
+            logger.info(`Updated Global Points: ${globalTotalPoints}`);
+        } else {
+            globalTotalPoints = 0;
+        }
+
     } catch(e) { console.error("Loop Error", e); }
 }, HOLDER_UPDATE_INTERVAL); 
 
