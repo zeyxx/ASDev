@@ -12,15 +12,20 @@ const axios = require('axios');
 const FormData = require('form-data');
 const { Queue, Worker } = require('bullmq');
 const IORedis = require('ioredis');
+// Ensure @solana/spl-token is in package.json
 const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, createCloseAccountInstruction } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.25.2-FLYWHEEL-PROD";
+const VERSION = "v10.25.4-MCAP-ENV";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
 const PRIORITY_FEE_MICRO_LAMPORTS = 100000; 
 const DEPLOYMENT_FEE_SOL = 0.02;
+
+// Update Intervals (Env Vars or Default to 2 mins)
+const HOLDER_UPDATE_INTERVAL = process.env.HOLDER_UPDATE_INTERVAL ? parseInt(process.env.HOLDER_UPDATE_INTERVAL) : 120000;
+const METADATA_UPDATE_INTERVAL = process.env.METADATA_UPDATE_INTERVAL ? parseInt(process.env.METADATA_UPDATE_INTERVAL) : 120000;
 
 // AUTH STRATEGY
 const PINATA_JWT = process.env.PINATA_JWT ? process.env.PINATA_JWT.trim() : null; 
@@ -190,7 +195,13 @@ async function recordClaim(amount) {
         const now = Date.now();
         await db.run('UPDATE stats SET value = ? WHERE key = ?', [now, 'lastClaimTimestamp']);
         await db.run('UPDATE stats SET value = ? WHERE key = ?', [amount, 'lastClaimAmountLamports']);
-        await db.run('UPDATE stats SET value = ? WHERE key = ?', [now + 5 * 60 * 1000, 'nextCheckTimestamp']);
+    }
+}
+
+async function updateNextCheckTime() {
+    if (db) {
+        const nextCheck = Date.now() + 5 * 60 * 1000;
+        await db.run('UPDATE stats SET value = ? WHERE key = ?', [nextCheck, 'nextCheckTimestamp']);
     }
 }
 
@@ -462,7 +473,19 @@ app.get('/api/health', async (req, res) => { try { const stats = await getStats(
     }); } catch (e) { res.status(500).json({ error: "DB Error" }); } });
 app.get('/api/check-holder', async (req, res) => { const { userPubkey } = req.query; if (!userPubkey) return res.json({ isHolder: false }); try { const result = await db.get('SELECT mint, rank FROM token_holders WHERE holderPubkey = ? LIMIT 1', userPubkey); res.json({ isHolder: !!result, ...(result || {}) }); } catch (e) { res.status(500).json({ error: "DB Error" }); } });
 app.get('/api/leaderboard', async (req, res) => { const { userPubkey } = req.query; try { const rows = await db.all('SELECT * FROM tokens ORDER BY volume24h DESC LIMIT 10'); const leaderboard = await Promise.all(rows.map(async (r) => { let isUserTopHolder = false; if (userPubkey) { const holderEntry = await db.get('SELECT rank FROM token_holders WHERE mint = ? AND holderPubkey = ?', [r.mint, userPubkey]); if (holderEntry) isUserTopHolder = true; } 
-    return { mint: r.mint, name: r.name, ticker: r.ticker, image: r.image, metadataUri: r.metadataUri, price: (r.marketCap / 1000000000).toFixed(6), volume: r.volume24h, isUserTopHolder, complete: !!r.complete, lastBackendUpdate: lastBackendUpdate }; 
+    return { 
+        mint: r.mint, 
+        name: r.name, 
+        ticker: r.ticker, 
+        image: r.image, 
+        metadataUri: r.metadataUri, 
+        price: (r.marketCap / 1000000000).toFixed(6), // Legacy price calc 
+        marketCap: r.marketCap || 0, // Raw market cap from DB
+        volume: r.volume24h, 
+        isUserTopHolder, 
+        complete: !!r.complete, 
+        lastBackendUpdate: lastBackendUpdate 
+    }; 
 })); res.json(leaderboard); } catch (e) { res.status(500).json([]); } });
 app.get('/api/recent-launches', async (req, res) => { try { const rows = await db.all('SELECT userPubkey, ticker, mint, timestamp FROM tokens ORDER BY timestamp DESC LIMIT 10'); res.json(rows.map(r => ({ userSnippet: r.userPubkey.slice(0, 5), ticker: r.ticker, mint: r.mint }))); } catch (e) { res.status(500).json([]); } });
 app.get('/api/debug/logs', (req, res) => { const logPath = path.join(DISK_ROOT, 'server_debug.log'); if (fs.existsSync(logPath)) { const stats = fs.statSync(logPath); const stream = fs.createReadStream(logPath, { start: Math.max(0, stats.size - 50000) }); stream.pipe(res); } else { res.send("No logs yet."); } });
@@ -523,6 +546,8 @@ app.post('/api/deploy', async (req, res) => {
 });
 
 // Loops
+
+// 1. Holder Scanner Loop
 setInterval(async () => { 
     if (!db) return; 
     try {
@@ -549,8 +574,9 @@ setInterval(async () => {
             await new Promise(r => setTimeout(r, 2000)); 
         } 
     } catch(e) { console.error("Loop Error", e); }
-}, 60 * 60 * 1000); 
+}, HOLDER_UPDATE_INTERVAL); 
 
+// 2. Token Metadata Loop
 setInterval(async () => { if (!db) return; 
     const tokens = await db.all('SELECT mint FROM tokens'); 
     for (let i = 0; i < tokens.length; i += 5) { 
@@ -561,6 +587,8 @@ setInterval(async () => { if (!db) return;
                 const data = response.data; 
                 if (data) {
                     const isComplete = data.complete ? 1 : 0;
+                    // Note: 'volume24h' is currently populated with 'usd_market_cap' because Pump API volume is harder to get.
+                    // Sticking to existing logic for volume column but ensuring marketCap is set for MCAP display.
                     await db.run(`UPDATE tokens SET volume24h = ?, marketCap = ?, lastUpdated = ?, complete = ? WHERE mint = ?`, [data.usd_market_cap || 0, data.usd_market_cap || 0, Date.now(), isComplete, t.mint]); 
                 }
             } catch (e) {} 
@@ -568,7 +596,7 @@ setInterval(async () => { if (!db) return;
         await new Promise(r => setTimeout(r, 1000)); 
     } 
     lastBackendUpdate = Date.now();
-}, 2 * 60 * 1000);
+}, METADATA_UPDATE_INTERVAL);
 
 let isBuybackRunning = false;
 
@@ -698,7 +726,12 @@ async function runPurchaseAndFees() {
         } else {
             // logPurchase('SKIPPED', { reason: 'Pending Fees Below Threshold', current: totalPendingFees.toString(), target: threshold.toString() });
         }
-    } catch(e) { logPurchase('ERROR', { message: e.message }); } finally { isBuybackRunning = false; }
+    } catch(e) { logPurchase('ERROR', { message: e.message }); } 
+    finally { 
+        isBuybackRunning = false; 
+        // [FIXED] Always update the timestamp check, regardless of claim success, so frontend timer resets
+        await updateNextCheckTime();
+    }
 }
 
 async function buyViaPumpAmm(amountIn, transfer9_5, transfer0_5, totalSpendable) {
