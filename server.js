@@ -16,7 +16,7 @@ const IORedis = require('ioredis');
 const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, createCloseAccountInstruction, createTransferInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.26.12-FIX-BALANCE-FETCH";
+const VERSION = "v10.26.13-MODERATION-RELAXED";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -169,7 +169,8 @@ async function checkContentSafety(base64Data) {
         const base64Content = base64Data.replace(/^data:image\/(.*);base64,/, '');
         const response = await axios.post(`https://api.clarifai.com/v2/models/d16f390eb32cad478c7ae150069bd2c6/versions/aa8be956dbaa4b7a858826a84253cab9/outputs`, { inputs: [{ data: { image: { base64: base64Content } } }] }, { headers: { "Authorization": `Key ${CLARIFAI_API_KEY}`, "Content-Type": "application/json" } });
         const concepts = response.data.outputs[0].data.concepts;
-        const unsafe = concepts.find(c => (c.name === 'gore' || c.name === 'explicit' || c.name === 'drug') && c.value > 0.85);
+        // RELAXED MODERATION: Only check for 'explicit' (pornographic) content. Removed 'gore' and 'drug'.
+        const unsafe = concepts.find(c => (c.name === 'explicit') && c.value > 0.85);
         return !unsafe;
     } catch (e) { return true; }
 }
