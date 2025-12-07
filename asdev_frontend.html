@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ASDev Launcher v10.20.0</title>
+    <title>ASDev Launcher v10.24.0</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
@@ -61,9 +61,10 @@
         .metric-card { background: rgba(0,0,0,0.2); border: 1px solid #ea580c; padding: 20px; border-radius: 8px; text-align: center; }
         .metric-value { font-size: 24px; font-weight: bold; color: white; font-family: 'JetBrains Mono'; margin-top: 5px; }
         .metric-label { font-size: 12px; color: #fdba74; text-transform: uppercase; letter-spacing: 1px; }
-        .holder-check { color: #4ade80; font-weight: bold; margin-left: 8px; }
-        .badge-bonded { display: inline-block; background-color: #22c55e; color: #000; font-weight: bold; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-left: 6px; border: 1px solid #14532d; }
-        .badge-bonding { display: inline-block; background-color: #eab308; color: #000; font-weight: bold; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-left: 6px; border: 1px solid #713f12; }
+        .holder-check { color: #4ade80; font-weight: bold; margin-left: 8px; display: inline-flex; align-items: center; gap: 2px; font-size: 10px; background: rgba(34, 197, 94, 0.2); padding: 2px 4px; border-radius: 4px; border: 1px solid #22c55e; }
+        /* [CHANGED] Smaller badges */
+        .badge-bonded { display: inline-block; background-color: #22c55e; color: #000; font-weight: bold; padding: 1px 4px; border-radius: 3px; font-size: 9px; margin-left: 6px; border: 1px solid #14532d; vertical-align: middle; }
+        .badge-bonding { display: inline-block; background-color: #eab308; color: #000; font-weight: bold; padding: 1px 4px; border-radius: 3px; font-size: 9px; margin-left: 6px; border: 1px solid #713f12; vertical-align: middle; }
     </style>
 </head>
 <body>
@@ -122,7 +123,11 @@
         
         <div class="panel bg-black/30 border border-orange-900 mt-8 lg:col-span-3">
             <div class="flex justify-between items-center border-b border-orange-900/50 pb-2 mb-4">
-                <h3 class="text-orange-500 font-mono text-sm uppercase tracking-widest">🔥 TOP 10 LAUNCHES (BY 24H VOL)</h3>
+                <div class="flex items-center gap-4">
+                    <h3 class="text-orange-500 font-mono text-sm uppercase tracking-widest">🔥 TOP 10 LAUNCHES (BY 24H VOL)</h3>
+                    <!-- [ADDED] Last Updated Timestamp -->
+                    <span id="leaderboard-last-updated" class="text-orange-600 text-xs font-mono">Updated: Just now</span>
+                </div>
                 <button onclick="updateLeaderboard()" class="text-orange-400 hover:text-white transition p-1 rounded hover:bg-orange-800" title="Refresh Leaderboard">
                     <i data-lucide="refresh-cw" width="16"></i>
                 </button>
@@ -136,8 +141,28 @@
         </div>
 
         <div class="panel bg-orange-950/30 border border-orange-900 mt-8 lg:col-span-3">
-            <div class="flex justify-between items-center border-b border-orange-900/50 pb-2 mb-4"><h3 class="text-orange-500 font-mono text-sm uppercase tracking-widest">BUYBACK OPERATIONS FEED (LAST 3)</h3><button onclick="toggleLogModal()" class="text-orange-400 hover:text-white transition font-mono text-xs underline p-1">VIEW ALL</button></div>
-            <div id="log-feed" class="flex flex-col gap-1 max-h-[120px] overflow-hidden"><p class="text-xs text-orange-400 font-mono text-center py-4">Waiting for next synchronization...</p></div>
+            <div class="flex justify-between items-center border-b border-orange-900/50 pb-2 mb-4">
+                <h3 class="text-orange-500 font-mono text-sm uppercase tracking-widest">BUYBACK & FEE TRACKER</h3>
+                <button onclick="toggleLogModal()" class="text-orange-400 hover:text-white transition font-mono text-xs underline p-1">VIEW ALL LOGS</button>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4 text-center">
+                <div class="bg-black/30 p-4 rounded border border-orange-900/50">
+                    <div class="text-xs text-orange-400 uppercase">Current Fee Balance</div>
+                    <div class="text-xl text-white font-bold font-mono mt-1"><span id="track-balance">0.0000</span> SOL</div>
+                </div>
+                <div class="bg-black/30 p-4 rounded border border-orange-900/50">
+                    <div class="text-xs text-orange-400 uppercase">Last Claim Amount</div>
+                    <div class="text-xl text-green-400 font-bold font-mono mt-1"><span id="track-last-amt">0.0000</span> SOL</div>
+                </div>
+                <div class="bg-black/30 p-4 rounded border border-orange-900/50">
+                    <div class="text-xs text-orange-400 uppercase">Last Claim Time</div>
+                    <div class="text-sm text-white font-mono mt-2" id="track-last-time">Never</div>
+                </div>
+                <div class="bg-black/30 p-4 rounded border border-orange-900/50">
+                    <div class="text-xs text-orange-400 uppercase">Next Check In</div>
+                    <div class="text-xl text-yellow-400 font-bold font-mono mt-1" id="track-next-check">--:--</div>
+                </div>
+            </div>
         </div>
 
         <div class="panel bg-orange-900/10 mt-8 lg:col-span-3">
@@ -145,21 +170,15 @@
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div class="metric-card"><div class="metric-label">Lifetime Launches</div><div id="metric-launches" class="metric-value">0</div></div>
                 <div class="metric-card"><div class="metric-label">$PUMP Tokens Bought</div><div id="metric-pump" class="metric-value">0</div></div>
-                <div class="metric-card"><div class="metric-label">ASDF Buybacks (SOL)</div><div id="metric-fees" class="metric-value">0.00</div></div>
+                <div class="metric-card"><div class="metric-label">Lifetime Fees Processed</div><div id="metric-fees" class="metric-value">0.00</div></div>
             </div>
             <div class="text-center mt-6">
                 <button onclick="toggleAboutModal()" class="text-orange-400 hover:text-white font-mono text-xs border border-orange-700 hover:bg-orange-800 px-4 py-2 rounded transition">ℹ️ VIEW FEE & BUYBACK MECHANICS</button>
             </div>
         </div>
         
-        <div id="result-area" class="panel hidden border-green-600 bg-green-950/20 mt-8">
-            <h3 class="text-green-400 font-bold font-mono mb-6 text-center text-3xl tracking-widest">DEPLOYMENT SUCCESSFUL</h3>
-            <div class="flex flex-col gap-3 mb-6 bg-black/40 p-6 rounded-lg border border-green-800"><p class="text-xs text-green-200 font-mono uppercase tracking-wider">MINT ADDRESS</p><p id="mint-addr" class="text-white font-mono text-lg break-all font-bold select-all"></p></div>
-            <a id="tx-link" href="#" target="_blank" class="block text-center text-base font-mono text-black bg-green-500 hover:bg-green-400 py-4 rounded-lg font-bold transition shadow-lg hover:shadow-green-500/20">VIEW TRANSACTION ON SOLSCAN</a>
-        </div>
-
         <div class="flex justify-between items-center mt-10 text-xs font-mono border-t border-orange-900 pt-6 opacity-70">
-            <div><span class="text-orange-600">RPC UPLINK: MAINNET PUBLIC</span> | <span class="text-orange-600 ml-2">LIFETIME PROTOCOL REVENUE: <span id="lifetime-fees" class="text-green-400 font-bold">0.00</span> SOL</span></div>
+            <div><span class="text-orange-600">RPC UPLINK: MAINNET PUBLIC</span></div>
             <div class="flex gap-4"><span>SYSTEM STATUS: <span id="sys-status" class="sys-status">OFFLINE</span></span><span id="version-display" class="text-orange-500 font-bold">v...</span></div>
         </div>
     </div>
@@ -184,8 +203,30 @@
     </div>
 </div></div>
 
+<!-- Success Modal -->
+<div id="success-modal" class="modal" style="display: none;">
+    <div class="modal-content text-center border-green-600 bg-green-950/90 relative">
+        <span class="close-btn absolute top-2 right-4 text-green-400 hover:text-white" onclick="closeSuccessModal()">&times;</span>
+        <div class="mb-6"><i data-lucide="rocket" class="w-16 h-16 text-green-400 mx-auto animate-bounce"></i></div>
+        <h3 class="text-green-400 font-bold font-mono mb-2 text-3xl tracking-widest">DEPLOYMENT SUCCESSFUL</h3>
+        <p class="text-green-200 text-sm mb-6">Your token is live on the Solana blockchain!</p>
+        
+        <div class="bg-black/40 p-4 rounded-lg border border-green-800 mb-6 text-left">
+            <p class="text-xs text-green-500 font-mono uppercase tracking-wider mb-1">MINT ADDRESS</p>
+            <p id="modal-mint-addr" class="text-white font-mono text-lg break-all font-bold select-all"></p>
+        </div>
+        
+        <a id="modal-tx-link" href="#" target="_blank" class="block w-full text-center text-base font-mono text-black bg-green-500 hover:bg-green-400 py-3 rounded-lg font-bold transition shadow-lg hover:shadow-green-500/20 mb-4">
+            VIEW TRANSACTION ON SOLSCAN
+        </a>
+        <button onclick="closeSuccessModal()" class="block w-full text-center text-sm font-mono text-green-400 border border-green-800 hover:bg-green-900/50 py-2 rounded-lg transition">
+            CLOSE & LAUNCH ANOTHER
+        </button>
+    </div>
+</div>
+
 <script>
-    const FRONTEND_VERSION = "v10.20.0";
+    const FRONTEND_VERSION = "v10.24.0";
     const BACKEND_URL = "https://asdev-1kvy.onrender.com"; 
     const DEV_WALLET_PUBKEY = "FNLWHjvjptwC7LxycdK3Knqcv5ptC19C9rynn6u2S1tB";
     const DEPLOYMENT_FEE = 0.02; 
@@ -194,9 +235,9 @@
 
     let userPubkey = null;
     let allLogs = []; 
-    // Frontend connection removed. Using backend proxy for critical ops.
     let pumpPriceCache = 0.0;
     let isDeploying = false;
+    let nextCheckTime = 0;
 
     const ui = {
         connectBtn: document.getElementById('connect-btn'), walletUI: document.getElementById('wallet-ui'), walletAddr: document.getElementById('wallet-addr'), walletBal: document.getElementById('wallet-bal'),
@@ -205,16 +246,17 @@
         previewName: document.getElementById('preview-name'), previewTicker: document.getElementById('preview-ticker'), lifetimeFees: document.getElementById('lifetime-fees'),
         logFeed: document.getElementById('log-feed'), headerImage: document.getElementById('header-image'), mayhemToggle: document.getElementById('mayhem-toggle'),
         mayhemStatusLabel: document.getElementById('mayhem-status-label'), logModal: document.getElementById('log-modal'), modalLogContent: document.getElementById('modal-log-content'),
-        aboutModal: document.getElementById('about-modal'), 
+        aboutModal: document.getElementById('about-modal'), successModal: document.getElementById('success-modal'),
         tickerContent: document.getElementById('ticker-content'), leaderboardBody: document.getElementById('leaderboard-body'), versionDisplay: document.getElementById('version-display'),
-        metricLaunches: document.getElementById('metric-launches'), metricPump: document.getElementById('metric-pump'), metricFees: document.getElementById('metric-fees')
+        metricLaunches: document.getElementById('metric-launches'), metricPump: document.getElementById('metric-pump'), metricFees: document.getElementById('metric-fees'),
+        trackBalance: document.getElementById('track-balance'), trackLastAmt: document.getElementById('track-last-amt'), trackLastTime: document.getElementById('track-last-time'), trackNextCheck: document.getElementById('track-next-check'),
+        leaderboardLastUpdated: document.getElementById('leaderboard-last-updated')
     };
 
     lucide.createIcons();
 
     fetch(`${BACKEND_URL}/api/version`).then(r=>r.json()).then(d=>ui.versionDisplay.innerText = `${FRONTEND_VERSION} | BE: ${d.version}`).catch(()=>{});
 
-    // --- OPTIMIZED DATA FETCHING (Unified 60s Loop) ---
     const updatePumpPrice = async () => {
         try {
             const res = await fetch(`https://frontend-api.pump.fun/coins/${PUMP_CONTRACT}`);
@@ -227,8 +269,13 @@
 
     const updateLeaderboard = async () => {
         try {
+            // [CHANGED] Pass userPubkey to let backend handle the "isUserTopHolder" check
             const res = await fetch(`${BACKEND_URL}/api/leaderboard${userPubkey ? '?userPubkey='+userPubkey : ''}`);
             const data = await res.json();
+            
+            // [CHANGED] Update last updated time
+            ui.leaderboardLastUpdated.innerText = `Updated: ${new Date().toLocaleTimeString()}`;
+
             if (!data || data.length === 0) { ui.leaderboardBody.innerHTML = '<tr><td colspan="6" class="text-center text-orange-400 py-4">No active tokens found.</td></tr>'; return; }
             ui.leaderboardBody.innerHTML = await Promise.all(data.map(async (item, index) => {
                 let displayPrice = item.price;
@@ -251,9 +298,7 @@
                     } catch (e) { console.error("DEX fetch failed", e); }
                 }
 
-                // [CHANGED] FETCH METADATA FOR IMAGE IF URI EXISTS
                 let imgSrc = item.image;
-                // If stored image is missing but we have URI, fetch it (Client-Side Resolution)
                 if ((!imgSrc || imgSrc.trim() === '') && item.metadataUri) {
                     try {
                         const metaRes = await fetch(item.metadataUri);
@@ -264,10 +309,15 @@
                     } catch (e) { console.error("Metadata fetch failed", e); }
                 }
                 
-                // Fallback
                 if (!imgSrc || imgSrc.trim() === '') {
                     imgSrc = 'https://placehold.co/32x32/333/fff?text=?'; 
                 }
+
+                // [CHANGED] Display Top Holder Mark
+                // Backend provides `isUserTopHolder` boolean. We minimalize API usage by not making extra calls here.
+                const holderMark = item.isUserTopHolder 
+                    ? `<span class="holder-check" title="You are a Top Holder">👑 TOP HOLDER</span>` 
+                    : '';
 
                 return `
                 <tr>
@@ -275,7 +325,7 @@
                     <td>
                         <img src="${imgSrc}" onerror="this.src='https://placehold.co/32x32/333/fff?text=?'" class="token-img-sm" alt="icon">
                         <span class="text-white font-bold">${item.ticker}</span>
-                        ${item.isUserTopHolder ? '<span class="holder-check" title="You are a Top 100 Holder">✅</span>' : ''}
+                        ${holderMark}
                         ${badge}
                     </td>
                     <td class="text-orange-200 truncate max-w-[100px]">${item.name}</td>
@@ -288,6 +338,7 @@
     };
     window.updateLeaderboard = updateLeaderboard;
 
+    // ... (rest of the script is unchanged) ...
     const fetchRecentLaunches = async () => { try { const res = await fetch(`${BACKEND_URL}/api/recent-launches`); if (res.ok) { const launches = await res.json(); if (launches.length === 0) { ui.tickerContent.innerHTML = '<span class="ticker-item text-orange-600">NO RECENT LAUNCHES YET... START ONE!</span>'; return; } const repeatedLaunches = Array(5).fill(launches).flat(); const tickerItems = repeatedLaunches.map(launch => `<span class="ticker-item"><span class="text-white font-bold">LAUNCHED:</span><span class="text-white">${launch.userSnippet}...</span><span class="text-orange-400">-></span><a href="${PUMPFUN_URL_BASE}${launch.mint}" target="_blank" class="font-bold underline">${launch.ticker}</a></span>`).join(''); ui.tickerContent.innerHTML = tickerItems; } } catch (e) {} };
 
     const checkHealth = async () => { 
@@ -305,10 +356,36 @@
                 else { tokensBought = (solSpent * 30000000).toLocaleString('en-US', {maximumFractionDigits: 0}); }
                 ui.metricPump.innerText = tokensBought;
                 allLogs = data.recentLogs; 
-                renderLogs(allLogs, ui.logFeed, 3);
+                
+                if (data.currentFeeBalance) ui.trackBalance.innerText = data.currentFeeBalance;
+                if (data.lastClaimAmount) ui.trackLastAmt.innerText = data.lastClaimAmount;
+                if (data.lastClaimTime && data.lastClaimTime > 0) {
+                    ui.trackLastTime.innerText = new Date(data.lastClaimTime).toLocaleString();
+                } else {
+                    ui.trackLastTime.innerText = "Never";
+                }
+                
+                if (data.nextCheckTime) {
+                    nextCheckTime = data.nextCheckTime;
+                }
+
             } else { throw new Error("Backend Error"); } 
         } catch (e) { ui.sysStatus.innerText = "OFFLINE"; ui.sysStatus.classList.remove("online"); ui.headerImage.src = "https://placehold.co/60x60/d97706/ffffff?text=LOGO"; } 
     };
+
+    setInterval(() => {
+        if (nextCheckTime > 0) {
+            const now = Date.now();
+            const diff = nextCheckTime - now;
+            if (diff > 0) {
+                const min = Math.floor(diff / 60000);
+                const sec = Math.floor((diff % 60000) / 1000);
+                ui.trackNextCheck.innerText = `${min}:${sec < 10 ? '0' + sec : sec}`;
+            } else {
+                ui.trackNextCheck.innerText = "Checking...";
+            }
+        }
+    }, 1000);
 
     const refreshWalletBalance = async () => { 
         if (!userPubkey) return; 
@@ -328,11 +405,8 @@
         } catch (e) { console.error("Balance check error:", e); } 
     };
 
-    // Unified Refresh Function
     const refreshAllData = async () => {
-        // Visual feedback on button
         if (ui.refreshBtn) ui.refreshBtn.classList.add('opacity-50', 'cursor-wait');
-        
         try {
             await Promise.allSettled([
                 updatePumpPrice(),
@@ -342,20 +416,14 @@
                 refreshWalletBalance()
             ]);
         } catch (e) { console.error("Auto-Refresh Error", e); }
-        
         if (ui.refreshBtn) ui.refreshBtn.classList.remove('opacity-50', 'cursor-wait');
     };
     window.refreshAllData = refreshAllData;
 
-    // Set Interval to 60s (1 Minute) for everything
     setInterval(refreshAllData, 60000);
-    // Initial Load
     refreshAllData();
 
-    // Bind Button
     ui.refreshBtn.onclick = () => refreshAllData();
-
-    // --- End Unified Fetching ---
 
     const updateMayhemLabel = () => { if (ui.mayhemToggle.checked) { ui.mayhemStatusLabel.innerText = "MAYHEM MODE: ON (HIGH RISK)"; ui.mayhemStatusLabel.classList.add('active'); } else { ui.mayhemStatusLabel.innerText = "MAYHEM MODE: OFF"; ui.mayhemStatusLabel.classList.remove('active'); } };
     ui.mayhemToggle.addEventListener('change', updateMayhemLabel); updateMayhemLabel(); 
@@ -364,34 +432,24 @@
     const previewImage = (event) => { const file = event.target.files[0]; if (file) { const reader = new FileReader(); reader.onload = (e) => { ui.imgPreview.innerHTML = `<img src="${e.target.result}" alt="Preview" class="rounded-lg w-full h-full object-cover">`; ui.imgPreview.style.border = "2px solid #ea580c"; }; reader.readAsDataURL(file); } else { ui.imgPreview.innerHTML = "NO IMAGE"; ui.imgPreview.style.border = "2px dashed #7c2d12"; } };
     window.previewImage = previewImage; window.updatePreview = updatePreview;
 
-    const renderLogs = (logs, targetElement, limit) => {
-        targetElement.innerHTML = ''; if (!logs || logs.length === 0) { targetElement.innerHTML = '<p class="text-xs text-orange-400 font-mono text-center py-4">No logs available.</p>'; return; }
-        
-        // SORT LOGS: Most recent first
-        // Assuming logs have a timestamp field (string ISO or number)
-        const sortedLogs = [...logs].sort((a, b) => {
-            const timeA = new Date(a.timestamp).getTime();
-            const timeB = new Date(b.timestamp).getTime();
-            return timeB - timeA;
-        });
+    const closeSuccessModal = () => { ui.successModal.style.display = 'none'; };
+    window.closeSuccessModal = closeSuccessModal;
 
-        const displayLogs = sortedLogs.slice(0, limit); 
-        const logHtml = displayLogs.map(log => {
-            // FORMAT: Local time
-            const time = new Date(log.timestamp).toLocaleTimeString(); 
-            let content, logClass;
-            if (log.type === 'SKIPPED') { content = `Fees Under Limit (${log.current}/${log.target} SOL)`; logClass = 'log-skipped'; } else if (log.type === 'SUCCESS') { content = `BUY: 80% | DIST: 20% | <a href="https://solscan.io/tx/${log.signature}" target="_blank" class="underline hover:text-white">View TX</a>`; logClass = 'log-success'; } else if (log.type === 'ERROR') { content = `FATAL ERROR: ${log.message.slice(0, 80)}`; logClass = 'log-error'; } else { content = `UNKNOWN EVENT`; logClass = 'text-orange-400'; }
-            return `<div class="log-entry ${logClass}"><span>[${time}] ${log.type}:</span> <span>${content}</span></div>`;
-        }).join('');
-        targetElement.innerHTML = logHtml;
+    const toggleLogModal = () => { ui.modalLogContent.innerHTML = ''; 
+        if(allLogs && allLogs.length > 0) {
+            ui.modalLogContent.innerHTML = allLogs.map(log => {
+                const time = new Date(log.timestamp).toLocaleTimeString();
+                return `<div class="log-entry text-orange-300"><span>[${time}] ${log.type}:</span> <span>${JSON.stringify(log.data || log)}</span></div>`;
+            }).join('');
+        } else {
+            ui.modalLogContent.innerHTML = '<p class="text-center text-orange-400">No logs yet.</p>';
+        }
+        ui.logModal.style.display = 'block'; 
     };
-
-    const toggleLogModal = () => { ui.modalLogContent.innerHTML = ''; renderLogs(allLogs, ui.modalLogContent, allLogs.length); ui.logModal.style.display = 'block'; };
     window.toggleLogModal = toggleLogModal;
     const closeLogModal = () => { ui.logModal.style.display = 'none'; };
     window.closeLogModal = closeLogModal;
 
-    // NEW About Modal Toggles
     const toggleAboutModal = () => { ui.aboutModal.style.display = 'block'; };
     window.toggleAboutModal = toggleAboutModal;
     const closeAboutModal = () => { ui.aboutModal.style.display = 'none'; };
@@ -442,7 +500,6 @@
         showStatus("PREPARING METADATA...", 'normal');
 
         try {
-            // STEP 1: Upload Metadata & Moderate
             const prepRes = await fetch(`${BACKEND_URL}/api/prepare-metadata`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -455,25 +512,19 @@
             }
             const { metadataUri } = await prepRes.json();
             
-            // STEP 2: Sign Transaction
             ui.deployBtn.innerText = "SIGNING FEE TRANSACTION...";
             showStatus("METADATA READY. PLEASE SIGN WALLET...", 'normal');
 
-            // Fetch Blockhash from Backend (Avoids 403 Public RPC Error)
             const bhRes = await fetch(`${BACKEND_URL}/api/blockhash`);
             if (!bhRes.ok) throw new Error("Failed to fetch blockhash from backend");
             const { blockhash } = await bhRes.json();
 
-            // FIXED: Added Priority Fees to the frontend payment transaction
             const tx = new solanaWeb3.Transaction();
-            
-            // Add Compute Budget Instructions (Priority Fee)
             const modifyComputeUnits = solanaWeb3.ComputeBudgetProgram.setComputeUnitLimit({ units: 200000 });
-            const addPriorityFee = solanaWeb3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100000 }); // 0.0001 SOL Gas
+            const addPriorityFee = solanaWeb3.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 100000 });
             tx.add(modifyComputeUnits);
             tx.add(addPriorityFee);
 
-            // Add Payment Instruction
             tx.add(
                 solanaWeb3.SystemProgram.transfer({
                     fromPubkey: new solanaWeb3.PublicKey(userPubkey),
@@ -487,7 +538,6 @@
             
             const signedTx = await window.solana.signAndSendTransaction(tx);
             
-            // STEP 3: Submit to Backend Queue
             ui.deployBtn.innerText = "QUEUING DEPLOYMENT...";
             showStatus("PAYMENT CONFIRMED. QUEUING...", 'normal');
 
@@ -496,7 +546,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     name, ticker, description, twitter, website,
-                    metadataUri, // Send the pre-uploaded URI
+                    metadataUri,
                     userTx: signedTx.signature,
                     userPubkey: userPubkey,
                     isMayhemMode: isMayhemMode 
@@ -526,19 +576,20 @@
                 if (job.state === 'completed') {
                     clearInterval(interval);
                     showStatus("LAUNCH CONFIRMED", 'success');
-                    document.getElementById('result-area').classList.remove('hidden');
-                    document.getElementById('mint-addr').innerText = job.result.mint;
-                    document.getElementById('tx-link').href = `https://solscan.io/tx/${job.result.signature}`;
+                    const mintAddr = job.result.mint;
+                    const txSig = job.result.signature;
+                    document.getElementById('modal-mint-addr').innerText = mintAddr;
+                    document.getElementById('modal-tx-link').href = `https://solscan.io/tx/${txSig}`;
+                    ui.successModal.style.display = 'block';
                     ui.deployBtn.innerText = "LAUNCH COMPLETE"; ui.deployBtn.disabled = false;
                     isDeploying = false;
-                    refreshAllData(); // Force refresh to update balance and logs
+                    refreshAllData();
                 } else if (job.state === 'failed') {
                     clearInterval(interval);
                     showStatus(`DEPLOYMENT FAILED: ${job.failedReason}`, 'error');
                     isDeploying = false;
                     ui.deployBtn.disabled = false; ui.deployBtn.innerText = "RETRY LAUNCH";
                 } else {
-                    // Update status text based on state
                     showStatus(`STATUS: ${job.state.toUpperCase()} (Please Wait...)`, 'normal');
                 }
             } catch (e) { console.error("Polling error", e); }

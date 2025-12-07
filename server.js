@@ -14,12 +14,13 @@ const { Queue, Worker } = require('bullmq');
 const IORedis = require('ioredis');
 
 // --- Config ---
-const VERSION = "v10.22.0-LOG-FIX";
+const VERSION = "v10.23.0-BUYBACK-TRACKER";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
 const PRIORITY_FEE_MICRO_LAMPORTS = 100000; 
 const DEPLOYMENT_FEE_SOL = 0.02;
+const CHECK_INTERVAL_MS = 5 * 60 * 1000; // 5 Minutes
 
 // AUTH STRATEGY
 const PINATA_JWT = process.env.PINATA_JWT ? process.env.PINATA_JWT.trim() : null; 
@@ -96,7 +97,7 @@ let db;
 async function initDB() {
     db = await open({ filename: DB_PATH, driver: sqlite3.Database });
     await db.exec('PRAGMA journal_mode = WAL;');
-    // [CHANGED] Added `metadataUri` to schema
+    // Added fields for detailed stats
     await db.exec(`CREATE TABLE IF NOT EXISTS tokens (mint TEXT PRIMARY KEY, userPubkey TEXT, name TEXT, ticker TEXT, description TEXT, twitter TEXT, website TEXT, image TEXT, isMayhemMode BOOLEAN, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, volume24h REAL DEFAULT 0, marketCap REAL DEFAULT 0, lastUpdated INTEGER DEFAULT 0, complete BOOLEAN DEFAULT 0, metadataUri TEXT);
         CREATE TABLE IF NOT EXISTS transactions (signature TEXT PRIMARY KEY, userPubkey TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, data TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
@@ -104,7 +105,10 @@ async function initDB() {
         CREATE TABLE IF NOT EXISTS token_holders (mint TEXT, holderPubkey TEXT, rank INTEGER, lastUpdated INTEGER, PRIMARY KEY (mint, holderPubkey));
         INSERT OR IGNORE INTO stats (key, value) VALUES ('accumulatedFeesLamports', 0);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('lifetimeFeesLamports', 0);
-        INSERT OR IGNORE INTO stats (key, value) VALUES ('totalPumpBoughtLamports', 0);`);
+        INSERT OR IGNORE INTO stats (key, value) VALUES ('totalPumpBoughtLamports', 0);
+        INSERT OR IGNORE INTO stats (key, value) VALUES ('lastClaimTimestamp', 0);
+        INSERT OR IGNORE INTO stats (key, value) VALUES ('lastClaimAmountLamports', 0);
+        INSERT OR IGNORE INTO stats (key, value) VALUES ('nextCheckTimestamp', 0);`); // Init tracking
     
     try { await db.exec('ALTER TABLE tokens ADD COLUMN metadataUri TEXT'); } catch(e) {}
 
@@ -164,10 +168,32 @@ async function refundUser(userPubkeyStr, reason) {
 async function addFees(amt) { if(db) { await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [amt, 'accumulatedFeesLamports']); await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [amt, 'lifetimeFeesLamports']); }}
 async function addPumpBought(amt) { if(db) await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [amt, 'totalPumpBoughtLamports']); }
 async function getTotalLaunches() { if(!db) return 0; const res = await db.get('SELECT COUNT(*) as count FROM tokens'); return res ? res.count : 0; }
-async function getStats() { if(!db) return { accumulatedFeesLamports: 0, lifetimeFeesLamports: 0, totalPumpBoughtLamports: 0 }; const acc = await db.get('SELECT value FROM stats WHERE key = ?', 'accumulatedFeesLamports'); const life = await db.get('SELECT value FROM stats WHERE key = ?', 'lifetimeFeesLamports'); const pump = await db.get('SELECT value FROM stats WHERE key = ?', 'totalPumpBoughtLamports'); return { accumulatedFeesLamports: acc ? acc.value : 0, lifetimeFeesLamports: life ? life.value : 0, totalPumpBoughtLamports: pump ? pump.value : 0 }; }
-async function resetAccumulatedFees(used) { const cur = await db.get('SELECT value FROM stats WHERE key = ?', 'accumulatedFeesLamports'); await db.run('UPDATE stats SET value = ? WHERE key = ?', [Math.max(0, (cur ? cur.value : 0) - used), 'accumulatedFeesLamports']); }
 
-// [FIX] Ensure logging stores structured data properly
+// [CHANGED] Enhanced Stats Getter
+async function getStats() { 
+    if(!db) return {}; 
+    const rows = await db.all('SELECT key, value FROM stats');
+    const stats = {};
+    rows.forEach(r => stats[r.key] = r.value);
+    return stats;
+}
+
+async function resetAccumulatedFees(used) { 
+    const cur = await db.get('SELECT value FROM stats WHERE key = ?', 'accumulatedFeesLamports'); 
+    await db.run('UPDATE stats SET value = ? WHERE key = ?', [Math.max(0, (cur ? cur.value : 0) - used), 'accumulatedFeesLamports']); 
+}
+
+// [CHANGED] Log Claim Details
+async function recordClaim(amount) {
+    if(db) {
+        const now = Date.now();
+        await db.run('UPDATE stats SET value = ? WHERE key = ?', [now, 'lastClaimTimestamp']);
+        await db.run('UPDATE stats SET value = ? WHERE key = ?', [amount, 'lastClaimAmountLamports']);
+        // Schedule next visual check time
+        await db.run('UPDATE stats SET value = ? WHERE key = ?', [now + CHECK_INTERVAL_MS, 'nextCheckTimestamp']);
+    }
+}
+
 async function logPurchase(type, data) { 
     try { 
         await db.run('INSERT INTO logs (type, data, timestamp) VALUES (?, ?, ?)', [type, JSON.stringify(data), new Date().toISOString()]); 
@@ -318,7 +344,7 @@ if (redisConnection) {
             const sig = await sendTxWithRetry(tx, [devKeypair, mintKeypair]);
             logger.info(`Transaction Confirmed: ${sig}`);
             
-            // [CHANGED] Pass metadataUri to save function
+            // Pass metadataUri to save function
             await saveTokenData(userPubkey, mint.toString(), { name, ticker, description, twitter, website, image, isMayhemMode, metadataUri });
 
             setTimeout(async () => { try { 
@@ -425,10 +451,33 @@ async function uploadMetadataToPinata(n, s, d, t, w, i) {
 
 // --- Routes ---
 app.get('/api/version', (req, res) => res.json({ version: VERSION }));
-app.get('/api/health', async (req, res) => { try { const stats = await getStats(); const launches = await getTotalLaunches(); const logs = await db.all('SELECT * FROM logs ORDER BY timestamp DESC LIMIT 50'); res.json({ status: "online", wallet: devKeypair.publicKey.toString(), lifetimeFees: (stats.lifetimeFeesLamports / LAMPORTS_PER_SOL).toFixed(4), totalPumpBought: (stats.totalPumpBoughtLamports / LAMPORTS_PER_SOL).toFixed(4), totalLaunches: launches, recentLogs: logs.map(l => ({ ...JSON.parse(l.data), type: l.type, timestamp: l.timestamp })), headerImageUrl: HEADER_IMAGE_URL }); } catch (e) { res.status(500).json({ error: "DB Error" }); } });
+app.get('/api/health', async (req, res) => { 
+    try { 
+        const stats = await getStats(); 
+        const launches = await getTotalLaunches(); 
+        const logs = await db.all('SELECT * FROM logs ORDER BY timestamp DESC LIMIT 50'); 
+        
+        // [CHANGED] Add current wallet balance as "Fee Balance"
+        const currentBalance = await connection.getBalance(devKeypair.publicKey);
+
+        res.json({ 
+            status: "online", 
+            wallet: devKeypair.publicKey.toString(), 
+            lifetimeFees: (stats.lifetimeFeesLamports / LAMPORTS_PER_SOL).toFixed(4), 
+            totalPumpBought: (stats.totalPumpBoughtLamports / LAMPORTS_PER_SOL).toFixed(4), 
+            totalLaunches: launches, 
+            recentLogs: logs.map(l => ({ ...JSON.parse(l.data), type: l.type, timestamp: l.timestamp })), 
+            headerImageUrl: HEADER_IMAGE_URL,
+            // New Tracker Fields
+            currentFeeBalance: (currentBalance / LAMPORTS_PER_SOL).toFixed(4),
+            lastClaimTime: stats.lastClaimTimestamp || 0,
+            lastClaimAmount: (stats.lastClaimAmountLamports / LAMPORTS_PER_SOL).toFixed(4),
+            nextCheckTime: stats.nextCheckTimestamp || (Date.now() + CHECK_INTERVAL_MS)
+        }); 
+    } catch (e) { res.status(500).json({ error: "DB Error" }); } 
+});
 app.get('/api/check-holder', async (req, res) => { const { userPubkey } = req.query; if (!userPubkey) return res.json({ isHolder: false }); try { const result = await db.get('SELECT mint, rank FROM token_holders WHERE holderPubkey = ? LIMIT 1', userPubkey); res.json({ isHolder: !!result, ...(result || {}) }); } catch (e) { res.status(500).json({ error: "DB Error" }); } });
 app.get('/api/leaderboard', async (req, res) => { const { userPubkey } = req.query; try { const rows = await db.all('SELECT * FROM tokens ORDER BY volume24h DESC LIMIT 10'); const leaderboard = await Promise.all(rows.map(async (r) => { let isUserTopHolder = false; if (userPubkey) { const holderEntry = await db.get('SELECT rank FROM token_holders WHERE mint = ? AND holderPubkey = ?', [r.mint, userPubkey]); if (holderEntry) isUserTopHolder = true; } 
-    // [CHANGED] Include metadataUri in response
     return { mint: r.mint, name: r.name, ticker: r.ticker, image: r.image, metadataUri: r.metadataUri, price: (r.marketCap / 1000000000).toFixed(6), volume: r.volume24h, isUserTopHolder, complete: !!r.complete }; 
 })); res.json(leaderboard); } catch (e) { res.status(500).json([]); } });
 app.get('/api/recent-launches', async (req, res) => { try { const rows = await db.all('SELECT userPubkey, ticker, mint, timestamp FROM tokens ORDER BY timestamp DESC LIMIT 10'); res.json(rows.map(r => ({ userSnippet: r.userPubkey.slice(0, 5), ticker: r.ticker, mint: r.mint }))); } catch (e) { res.status(500).json([]); } });
@@ -608,6 +657,7 @@ async function runPurchaseAndFees() {
                  tx.feePayer = devKeypair.publicKey;
                  const sig = await sendTxWithRetry(tx, [devKeypair]);
                  await addPumpBought(tokenBuyAmount.toNumber()); 
+                 await recordClaim(spendable); // [CHANGED] Record stats
                  logPurchase('SUCCESS', { totalSpent: spendable, buyAmount: tokenBuyAmount.toString(), signature: sig });
                  await resetAccumulatedFees(spendable);
              } else { logPurchase('SKIPPED', { reason: 'Insufficient Real Balance', balance: realBalance }); }
@@ -632,6 +682,7 @@ async function buyViaPumpAmm(amountIn, transfer9_5, transfer0_5, totalSpendable)
         
         const sig = await sendTxWithRetry(distTx, [devKeypair]);
         await addPumpBought(0); 
+        await recordClaim(totalSpendable); // [CHANGED] Record stats
         logPurchase('SUCCESS (MANUAL DIST)', { totalSpent: totalSpendable, signature: sig });
         await resetAccumulatedFees(totalSpendable);
 
@@ -640,6 +691,6 @@ async function buyViaPumpAmm(amountIn, transfer9_5, transfer0_5, totalSpendable)
     }
 }
 
-setInterval(runPurchaseAndFees, 5 * 60 * 1000);
+setInterval(runPurchaseAndFees, CHECK_INTERVAL_MS); // [CHANGED] use const interval
 
 app.listen(PORT, () => logger.info(`Server v${VERSION} running on ${PORT}`));
