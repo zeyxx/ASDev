@@ -32,8 +32,11 @@
         .status-error { border-color: #ef4444; color: #fca5a5; background: rgba(127, 29, 29, 0.3); }
         .sys-status { color: #ef4444; font-weight: bold; transition: color 0.5s; }
         .sys-status.online { color: #22c55e; text-shadow: 0 0 8px rgba(34, 197, 94, 0.6); }
-        #image-preview { width: 180px; height: 180px; border: 2px dashed #7c2d12; display: flex; align-items: center; justify-content: center; background: #2a1005; color: #7c2d12; font-family: 'JetBrains Mono'; font-size: 12px; overflow: hidden; border-radius: 12px; margin-top: 10px; }
+        #image-preview { width: 180px; height: 180px; border: 2px dashed #7c2d12; display: flex; align-items: center; justify-content: center; background: #2a1005; color: #7c2d12; font-family: 'JetBrains Mono'; font-size: 12px; overflow: hidden; border-radius: 12px; margin-top: 10px; cursor: pointer; position: relative; }
         #image-preview img { width: 100%; height: 100%; object-fit: cover; }
+        /* DRAG AND DROP STATE */
+        .drag-over { border-color: #22c55e !important; background-color: rgba(34, 197, 94, 0.2) !important; border-style: solid !important; transform: scale(1.02); }
+        
         .log-entry { border-bottom: 1px solid rgba(234, 88, 12, 0.3); padding: 8px 0; font-family: 'JetBrains Mono'; font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
         .log-entry:last-child { border-bottom: none; }
         .log-skipped { color: #fdba74; opacity: 0.8; }
@@ -65,6 +68,7 @@
         .badge-bonded { display: inline-block; background-color: #22c55e; color: #000; font-weight: bold; padding: 1px 4px; border-radius: 3px; font-size: 9px; margin-left: 6px; border: 1px solid #14532d; vertical-align: middle; }
         .badge-bonding { display: inline-block; background-color: #eab308; color: #000; font-weight: bold; padding: 1px 4px; border-radius: 3px; font-size: 9px; margin-left: 6px; border: 1px solid #713f12; vertical-align: middle; }
         .tx-link { color: #a78bfa; text-decoration: underline; font-size: 10px; }
+        .ca-display { word-break: break-all; user-select: all; cursor: copy; }
     </style>
 </head>
 <body>
@@ -88,8 +92,17 @@
             <div class="panel col-span-1 flex flex-col items-center justify-start h-full">
                 <h3 class="text-orange-500 font-mono text-sm mb-6 uppercase tracking-widest w-full text-center border-b-2 border-orange-900/50 pb-3">Token Preview</h3>
                 <div class="text-center mb-4 min-h-[60px]"><h2 id="preview-name" class="text-2xl font-bold text-white break-words">Token Name</h2><p id="preview-ticker" class="text-orange-400 font-mono text-lg uppercase">$TICKER</p></div>
-                <div id="image-preview" class="mb-6 shadow-2xl shadow-orange-900/30 transition-all duration-300">NO IMAGE</div>
-                <input type="file" id="image-file" class="input-field text-sm" accept="image/png, image/jpeg, image/gif" onchange="previewImage(event)"><p class="text-xs text-orange-400 font-mono text-center mt-2">Required: PNG, JPG, GIF.<br>Max size 4MB.</p>
+                
+                <!-- DRAG AND DROP ZONE -->
+                <div id="image-preview" class="mb-6 shadow-2xl shadow-orange-900/30 transition-all duration-300" onclick="document.getElementById('image-file').click()">
+                    <div class="text-center pointer-events-none">
+                        <div class="text-2xl mb-2">📁</div>
+                        <div class="text-xs font-bold text-orange-400">DRAG & DROP<br>OR CLICK TO UPLOAD</div>
+                    </div>
+                </div>
+                
+                <input type="file" id="image-file" class="hidden" accept="image/png, image/jpeg, image/gif" onchange="previewImage(event)">
+                <p class="text-xs text-orange-400 font-mono text-center mt-2">Required: PNG, JPG, GIF.<br>Max size 4MB.</p>
             </div>
             <div class="panel col-span-2">
                 <h3 class="text-orange-500 font-mono text-sm mb-6 uppercase tracking-widest border-b-2 border-orange-900/50 pb-3">Token Metadata</h3>
@@ -244,9 +257,9 @@
                 <h4 class="text-orange-400 font-bold mb-3 border-b border-orange-800 pb-1">2. THE FLYWHEEL (BUYBACKS)</h4>
                 <p class="text-orange-200 mb-2">Every 5 minutes, if the Fee Pool > 0.20 SOL:</p>
                 <ul class="list-disc list-inside text-gray-400 space-y-1 mb-4">
-                    <li><span class="text-green-400 font-bold">90.0%</span> buys **$PUMP** (Sent to Dev Wallet).</li>
-                    <li><span class="text-red-400 font-bold">9.5%</span> sent to Fee Wallet ($ASDF Burns).</li>
-                    <li><span class="text-red-400 font-bold">0.5%</span> sent to Upkeep.</li>
+                    <li><span class="text-green-400 font-bold">90.0%</span>: Buys **$PUMP** (Sent to Dev Wallet).</li>
+                    <li><span class="text-red-400 font-bold">9.5%</span>: Sent to Fee Wallet ($ASDF Burns).</li>
+                    <li><span class="text-red-400 font-bold">0.5%</span>: Sent to Upkeep.</li>
                 </ul>
             </div>
             
@@ -289,17 +302,22 @@
         <h3 class="text-green-400 font-bold font-mono mb-2 text-3xl tracking-widest">DEPLOYMENT SUCCESSFUL</h3>
         <p class="text-green-200 text-sm mb-6">Your token is live on the Solana blockchain!</p>
         
-        <div class="bg-black/40 p-4 rounded-lg border border-green-800 mb-6 text-left">
-            <p class="text-xs text-green-500 font-mono uppercase tracking-wider mb-1">MINT ADDRESS</p>
-            <p id="modal-mint-addr" class="text-white font-mono text-lg break-all font-bold select-all"></p>
+        <div class="bg-black/40 p-4 rounded-lg border border-green-800 mb-4 text-left">
+            <p class="text-xs text-green-500 font-mono uppercase tracking-wider mb-1">CONTRACT ADDRESS (CA)</p>
+            <p id="modal-mint-addr" class="text-white font-mono text-lg break-all font-bold ca-display" onclick="copyCA()"></p>
         </div>
         
-        <a id="modal-tx-link" href="#" target="_blank" class="block w-full text-center text-base font-mono text-black bg-green-500 hover:bg-green-400 py-3 rounded-lg font-bold transition shadow-lg hover:shadow-green-500/20 mb-4">
-            VIEW TRANSACTION ON SOLSCAN
-        </a>
-        <button onclick="closeSuccessModal()" class="block w-full text-center text-sm font-mono text-green-400 border border-green-800 hover:bg-green-900/50 py-2 rounded-lg transition">
-            CLOSE & LAUNCH ANOTHER
-        </button>
+        <div class="flex flex-col gap-3">
+            <a id="modal-pump-link" href="#" target="_blank" class="block w-full text-center text-base font-mono text-black bg-yellow-400 hover:bg-yellow-300 py-3 rounded-lg font-bold transition shadow-lg hover:shadow-yellow-500/20">
+                TRADE ON PUMP.FUN
+            </a>
+            <a id="modal-tx-link" href="#" target="_blank" class="block w-full text-center text-base font-mono text-white bg-indigo-500 hover:bg-indigo-400 py-3 rounded-lg font-bold transition shadow-lg hover:shadow-indigo-500/20">
+                VIEW TRANSACTION ON SOLSCAN
+            </a>
+            <button onclick="closeSuccessModal()" class="block w-full text-center text-sm font-mono text-green-400 border border-green-800 hover:bg-green-900/50 py-2 rounded-lg transition">
+                CLOSE & LAUNCH ANOTHER
+            </button>
+        </div>
     </div>
 </div>
 
@@ -342,6 +360,20 @@
     };
 
     lucide.createIcons();
+    
+    // Function to copy CA to clipboard
+    const copyCA = () => {
+        const ca = ui.successModal.querySelector('#modal-mint-addr').textContent;
+        // Use the old execCommand method for broader compatibility in sandboxed environments
+        const tempInput = document.createElement('textarea');
+        tempInput.value = ca;
+        document.body.appendChild(tempInput);
+        tempInput.select();
+        document.execCommand('copy');
+        document.body.removeChild(tempInput);
+        showStatus("Contract Address copied to clipboard!", 'success');
+    };
+    window.copyCA = copyCA; // Expose globally for the onclick event in HTML
 
     fetch(`${BACKEND_URL}/api/version`).then(r=>r.json()).then(d=>ui.versionDisplay.innerText = `${FRONTEND_VERSION} | BE: ${d.version}`).catch(()=>{});
 
@@ -630,8 +662,77 @@
     ui.mayhemToggle.addEventListener('change', updateMayhemLabel); updateMayhemLabel(); 
 
     const updatePreview = () => { ui.previewName.innerText = document.getElementById('name').value || "Token Name"; ui.previewTicker.innerText = document.getElementById('ticker').value ? `$${document.getElementById('ticker').value.toUpperCase()}` : "$TICKER"; };
-    const previewImage = (event) => { const file = event.target.files[0]; if (file) { const reader = new FileReader(); reader.onload = (e) => { ui.imgPreview.innerHTML = `<img src="${e.target.result}" alt="Preview" class="rounded-lg w-full h-full object-cover">`; ui.imgPreview.style.border = "2px solid #ea580c"; }; reader.readAsDataURL(file); } else { ui.imgPreview.innerHTML = "NO IMAGE"; ui.imgPreview.style.border = "2px dashed #7c2d12"; } };
+    
+    // Updated previewImage to handle drag/drop and click upload
+    const previewImage = (event) => { 
+        const files = event.target.files || event.dataTransfer?.files;
+        const file = files?.[0]; 
+
+        if (file) { 
+            const reader = new FileReader(); 
+            reader.onload = (e) => { 
+                ui.imgPreview.innerHTML = `<img src="${e.target.result}" alt="Preview" class="rounded-lg w-full h-full object-cover">`; 
+                ui.imgPreview.style.border = "2px solid #ea580c"; 
+            }; 
+            reader.readAsDataURL(file); 
+        } else { 
+            ui.imgPreview.innerHTML = `
+                <div class="text-center pointer-events-none">
+                    <div class="text-2xl mb-2">📁</div>
+                    <div class="text-xs font-bold text-orange-400">DRAG & DROP<br>OR CLICK TO UPLOAD</div>
+                </div>`;
+            ui.imgPreview.style.border = "2px dashed #7c2d12"; 
+        } 
+    };
     window.previewImage = previewImage; window.updatePreview = updatePreview;
+    
+    // DRAG AND DROP HANDLERS
+    const dropZone = document.getElementById('image-preview');
+    const fileInput = document.getElementById('image-file');
+
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, preventDefaults, false);
+    });
+
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, highlight, false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, unhighlight, false);
+    });
+
+    function highlight(e) {
+        dropZone.classList.add('drag-over');
+    }
+
+    function unhighlight(e) {
+        dropZone.classList.remove('drag-over');
+    }
+
+    dropZone.addEventListener('drop', handleDrop, false);
+
+    function handleDrop(e) {
+        const dt = e.dataTransfer;
+        const files = dt.files;
+
+        if (files.length > 0 && files[0].type.startsWith('image/')) {
+            // Create a new FileList object to assign to the file input
+            const dataTransfer = new DataTransfer();
+            dataTransfer.items.add(files[0]);
+            fileInput.files = dataTransfer.files; 
+            
+            previewImage({ target: fileInput }); // Trigger existing preview logic using the file input
+        } else {
+             showStatus("Invalid file type dropped. Please use an image.", 'error');
+        }
+    }
+
 
     const closeSuccessModal = () => { ui.successModal.style.display = 'none'; };
     window.closeSuccessModal = closeSuccessModal;
@@ -651,7 +752,6 @@
     const closeLogModal = () => { ui.logModal.style.display = 'none'; };
     window.closeLogModal = closeLogModal;
 
-    // NEW AIRDROP MODAL LOGIC
     const toggleAirdropLogModal = async () => {
         ui.airdropLogModal.style.display = 'block';
         ui.modalAirdropLogContent.innerHTML = '<div class="text-center text-purple-400 p-4">Loading History...</div>';
@@ -840,8 +940,12 @@
                     showStatus("LAUNCH CONFIRMED", 'success');
                     const mintAddr = job.result.mint;
                     const txSig = job.result.signature;
-                    document.getElementById('modal-mint-addr').innerText = mintAddr;
-                    document.getElementById('modal-tx-link').href = `https://solscan.io/tx/${txSig}`;
+                    
+                    // UPDATE SUCCESS MODAL LINKS
+                    ui.successModal.querySelector('#modal-mint-addr').textContent = mintAddr;
+                    ui.successModal.querySelector('#modal-tx-link').href = `https://solscan.io/tx/${txSig}`;
+                    ui.successModal.querySelector('#modal-pump-link').href = `${PUMPFUN_URL_BASE}${mintAddr}`;
+                    
                     ui.successModal.style.display = 'block';
                     ui.deployBtn.innerText = "LAUNCH COMPLETE"; ui.deployBtn.disabled = false;
                     isDeploying = false;
