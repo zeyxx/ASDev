@@ -17,7 +17,7 @@ const IORedis = require('ioredis');
 const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, createCloseAccountInstruction, createTransferInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.26.16-LOGIC-FIX";
+const VERSION = "v10.26.17-RECLAIM-RENT-VOL";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -149,6 +149,7 @@ async function initDB() {
         INSERT OR IGNORE INTO stats (key, value) VALUES ('lifetimeFeesLamports', 0);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('lifetimeCreatorFeesLamports', 0);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('totalPumpBoughtLamports', 0);
+        INSERT OR IGNORE INTO stats (key, value) VALUES ('totalPumpTokensBought', 0); 
         INSERT OR IGNORE INTO stats (key, value) VALUES ('lastClaimTimestamp', 0);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('lastClaimAmountLamports', 0);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('nextCheckTimestamp', 0);`); 
@@ -161,6 +162,7 @@ async function initDB() {
     
     // Ensure new stat key exists for existing DBs
     try { await db.run("INSERT OR IGNORE INTO stats (key, value) VALUES ('lifetimeCreatorFeesLamports', 0)"); } catch(e) {}
+    try { await db.run("INSERT OR IGNORE INTO stats (key, value) VALUES ('totalPumpTokensBought', 0)"); } catch(e) {}
 
     logger.info(`DB Initialized at ${DB_PATH}`);
 }
@@ -421,10 +423,15 @@ if (redisConnection) {
                     ];
 
                     const sellIx = new TransactionInstruction({ keys: sellKeys, programId: PUMP_PROGRAM_ID, data: sellData });
+                    
+                    // NEW: Close Account Instruction to Reclaim Rent (~0.002 SOL)
+                    const closeIx = createCloseAccountInstruction(associatedUser, creator, creator, [], TOKEN_PROGRAM_2022_ID);
+
                     const sellTx = new Transaction();
                     addPriorityFee(sellTx); 
-                    sellTx.add(sellIx); 
+                    sellTx.add(sellIx).add(closeIx); 
                     await sendTxWithRetry(sellTx, [devKeypair]); 
+                    logger.info(`Sold & Closed Account for ${ticker}`);
                 } 
             } catch (e) { logger.error("Sell error", {msg: e.message}); } }, 1500); 
 
@@ -510,6 +517,10 @@ app.get('/api/health', async (req, res) => {
             const launches = await getTotalLaunches(); 
             const logs = await db.all('SELECT * FROM logs ORDER BY timestamp DESC LIMIT 50'); 
             
+            // NEW: Get Platform Total Daily Volume
+            const volRes = await db.get('SELECT SUM(volume24h) as total FROM tokens');
+            const totalVolume = volRes && volRes.total ? volRes.total : 0;
+
             // RPC Calls to Cache
             const currentBalance = await connection.getBalance(devKeypair.publicKey);
             
@@ -539,7 +550,7 @@ app.get('/api/health', async (req, res) => {
             } catch (e) { }
 
             return {
-                stats, launches, logs, currentBalance, pumpHoldings, totalPendingFees
+                stats, launches, logs, currentBalance, pumpHoldings, totalPendingFees, totalVolume
             };
         });
 
@@ -549,18 +560,21 @@ app.get('/api/health', async (req, res) => {
         res.json({ 
             status: "online", 
             wallet: devKeypair.publicKey.toString(), 
-            lifetimeFees: (totalFeesLamports / LAMPORTS_PER_SOL).toFixed(4), // Consolidated Metric
-            totalPumpBought: (cachedHealth.stats.totalPumpBoughtLamports / LAMPORTS_PER_SOL).toFixed(4), 
+            lifetimeFees: (totalFeesLamports / LAMPORTS_PER_SOL).toFixed(4), 
+            totalPumpBought: (cachedHealth.stats.totalPumpBoughtLamports / LAMPORTS_PER_SOL).toFixed(4),
+            // NEW: Actual PUMP Tokens Bought Stat
+            totalPumpTokensBought: (cachedHealth.stats.totalPumpTokensBought || 0).toLocaleString('en-US', {maximumFractionDigits: 0}),
             pumpHoldings: cachedHealth.pumpHoldings,
             totalPoints: globalTotalPoints, 
             totalLaunches: cachedHealth.launches, 
             recentLogs: cachedHealth.logs.map(l => ({ ...JSON.parse(l.data), type: l.type, timestamp: l.timestamp })), 
             headerImageUrl: HEADER_IMAGE_URL,
-            // UPDATED: Now showing the sum of Bonding Curve + AMM Vaults
             currentFeeBalance: (cachedHealth.totalPendingFees / LAMPORTS_PER_SOL).toFixed(4),
             lastClaimTime: cachedHealth.stats.lastClaimTimestamp || 0,
             lastClaimAmount: (cachedHealth.stats.lastClaimAmountLamports / LAMPORTS_PER_SOL).toFixed(4),
-            nextCheckTime: cachedHealth.stats.nextCheckTimestamp || (Date.now() + 5*60*1000)
+            nextCheckTime: cachedHealth.stats.nextCheckTimestamp || (Date.now() + 5*60*1000),
+            // NEW: Return Total Platform Volume
+            totalVolume: cachedHealth.totalVolume
         }); 
     } catch (e) { res.status(500).json({ error: "DB Error" }); } 
 });
@@ -1298,7 +1312,6 @@ async function buyViaPumpAmm(solAmountIn, transfer9_5, transfer0_5, totalSpendab
     logger.info("Executing Fee Distribution and SOL -> USDC -> PUMP Buyback...");
     
     // 1. Distribute Fees (SOL)
-    // We send fees FIRST so the fee wallets receive native SOL (as expected), not USDC.
     try {
         const feeTx = new Transaction();
         addPriorityFee(feeTx);
@@ -1312,18 +1325,15 @@ async function buyViaPumpAmm(solAmountIn, transfer9_5, transfer0_5, totalSpendab
     }
 
     // 2. Swap SOL -> USDC
-    // Now we swap the REMAINING portion (the 90% allocated for buyback)
     logger.info(`💱 Swapping ${solAmountIn / LAMPORTS_PER_SOL} SOL to USDC...`);
     const jupSig = await swapSolToUsdc(solAmountIn);
     if (!jupSig) return null;
     logger.info("✅ USDC Acquired");
 
     // 3. Buy PUMP with USDC
-    // Logic: Check how much USDC we actually have now and use that entire balance for the Pump buy.
     try {
         const mint = TARGET_PUMP_TOKEN;
         const [poolAuthority] = PublicKey.findProgramAddressSync([Buffer.from("pool-authority"), mint.toBuffer()], PUMP_AMM_PROGRAM_ID);
-        // Canonical pool index is 0, Quote is USDC
         const [pool] = PublicKey.findProgramAddressSync([Buffer.from("pool"), new Uint8Array([0,0]), poolAuthority.toBuffer(), mint.toBuffer(), USDC_MINT.toBuffer()], PUMP_AMM_PROGRAM_ID);
         
         // Check USDC Balance
@@ -1336,13 +1346,20 @@ async function buyViaPumpAmm(solAmountIn, transfer9_5, transfer0_5, totalSpendab
             return null;
         }
 
+        // NEW: Get PUMP Balance BEFORE swap
+        const userTokenLegacy = await getAssociatedTokenAddress(mint, devKeypair.publicKey);
+        let prePumpBal = 0;
+        try {
+            const pre = await connection.getTokenAccountBalance(userTokenLegacy);
+            prePumpBal = pre.value.uiAmount || 0;
+        } catch(e) {}
+
         logger.info(`💎 Buying PUMP with ${bal.value.uiAmount} USDC...`);
 
         // Dynamically fetch Pool to get coin_creator
         const poolInfo = await connection.getAccountInfo(pool);
         if (!poolInfo) throw new Error("Pump Pool Not Found");
         
-        // Decode coin_creator from Pool data
         const coinCreator = new PublicKey(poolInfo.data.subarray(211, 243));
         const [coinCreatorVaultAuth] = PublicKey.findProgramAddressSync([Buffer.from("creator_vault"), coinCreator.toBuffer()], PUMP_AMM_PROGRAM_ID);
         const coinCreatorVaultAta = await getAssociatedTokenAddress(USDC_MINT, coinCreatorVaultAuth, true);
@@ -1353,7 +1370,6 @@ async function buyViaPumpAmm(solAmountIn, transfer9_5, transfer0_5, totalSpendab
         const protocolFeeRecipient = new PublicKey("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV"); 
         const protocolFeeRecipientTokenAccount = await getAssociatedTokenAddress(USDC_MINT, protocolFeeRecipient, true);
 
-        const userTokenLegacy = await getAssociatedTokenAddress(mint, devKeypair.publicKey);
         const poolBaseTokenAccount = getATA(mint, pool, TOKEN_PROGRAM_ID); 
         const poolQuoteTokenAccount = getATA(USDC_MINT, pool, TOKEN_PROGRAM_ID);
 
@@ -1365,11 +1381,10 @@ async function buyViaPumpAmm(solAmountIn, transfer9_5, transfer0_5, totalSpendab
         if (!tokenAccountInfo) {
             tx.add(createAssociatedTokenAccountInstruction(devKeypair.publicKey, userTokenLegacy, devKeypair.publicKey, mint));
         }
-        // USDC account must exist because we just swapped into it.
 
         // 3. Swap Instruction
         const swapDiscriminator = Buffer.from([198, 46, 21, 82, 180, 217, 232, 112]); // buy_exact_quote_in (We are spending USDC)
-        const amountInBuf = usdcAmount.toArrayLike(Buffer, 'le', 8); // USE USDC BALANCE HERE
+        const amountInBuf = usdcAmount.toArrayLike(Buffer, 'le', 8); 
         const minAmountOutBuf = new BN(1).toArrayLike(Buffer, 'le', 8);
         const trackVolumeBuf = Buffer.from([0]);
         const swapData = Buffer.concat([swapDiscriminator, amountInBuf, minAmountOutBuf, trackVolumeBuf]);
@@ -1413,7 +1428,21 @@ async function buyViaPumpAmm(solAmountIn, transfer9_5, transfer0_5, totalSpendab
         tx.feePayer = devKeypair.publicKey;
 
         const sig = await sendTxWithRetry(tx, [devKeypair]);
-        await addPumpBought(0); 
+        
+        // NEW: Calculate Tokens Bought
+        await new Promise(r => setTimeout(r, 2000)); // Wait for confirmation
+        try {
+            const post = await connection.getTokenAccountBalance(userTokenLegacy);
+            const postPumpBal = post.value.uiAmount || 0;
+            const bought = postPumpBal - prePumpBal;
+            
+            if (bought > 0) {
+                await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [bought, 'totalPumpTokensBought']);
+                // Keep the old tracking for reference, but new metric takes precedence
+                await addPumpBought(0); 
+            }
+        } catch(e) { logger.warn("Failed to update pump bought stats", {error: e.message}); }
+
         await recordClaim(totalSpendable); 
         return sig;
 

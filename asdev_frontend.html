@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ASDev Launcher v10.25.0</title>
+    <title>ASDev Launcher v10.26.17</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
@@ -108,7 +108,7 @@
                 <h3 class="text-orange-500 font-mono text-sm mb-6 uppercase tracking-widest border-b-2 border-orange-900/50 pb-3">Token Metadata</h3>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                     <div><label class="block text-sm text-orange-300 font-mono mb-2">NAME <span class="text-red-500">*</span></label><input type="text" id="name" class="input-field" placeholder="e.g. Infernal Coin" maxlength="32" oninput="updatePreview()"></div>
-                    <div><label class="block text-sm text-orange-300 font-mono mb-2">TICKER <span class="text-red-500">*</span></label><input type="text" id="ticker" class="input-field" placeholder="e.g. BURN" maxlength="10" oninput="updatePreview()"></div>
+                    <div><label class="block text-sm text-orange-300 font-mono mb-2">TICKER <span class="text-red-500">*</span></label><input type="text" id="ticker" class="input-field" placeholder="e.g. BURN" maxlength="12" oninput="updatePreview()"></div>
                 </div>
                 <label class="block text-sm text-orange-300 font-mono mb-2">DESCRIPTION</label><textarea id="desc" class="input-field h-32" placeholder="Description of the asset (Max 200 chars)..." maxlength="200"></textarea>
                 <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -240,7 +240,8 @@
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div class="metric-card"><div class="metric-label">Lifetime Launches</div><div id="metric-launches" class="metric-value">0</div></div>
                 <div class="metric-card"><div class="metric-label">$PUMP Tokens Bought</div><div id="metric-pump" class="metric-value">0</div></div>
-                <div class="metric-card"><div class="metric-label">Lifetime Claim Amount</div><div id="metric-fees" class="metric-value">0.00 SOL</div></div>
+                <!-- CHANGED LABEL -->
+                <div class="metric-card"><div class="metric-label">Total Daily Volume</div><div id="metric-fees" class="metric-value">$0.00</div></div>
             </div>
             <div class="text-center mt-6">
                 <button onclick="toggleAboutModal()" class="text-orange-400 hover:text-white font-mono text-xs border border-orange-700 hover:bg-orange-800 px-4 py-2 rounded transition">ℹ️ VIEW FEE & BUYBACK MECHANICS</button>
@@ -363,7 +364,7 @@
 </div>
 
 <script>
-    const FRONTEND_VERSION = "v10.25.1";
+    const FRONTEND_VERSION = "v10.26.17";
     const BACKEND_URL = "https://asdev-1kvy.onrender.com"; 
     const DEV_WALLET_PUBKEY = "FNLWHjvjptwC7LxycdK3Knqcv5ptC19C9rynn6u2S1tB";
     const DEPLOYMENT_FEE = 0.02; 
@@ -617,15 +618,27 @@
                 ui.sysStatus.innerText = "ONLINE"; ui.sysStatus.classList.add("online"); 
                 ui.headerImage.src = data.headerImageUrl || "https://placehold.co/60x60/d97706/ffffff?text=LOGO"; 
                 
-                // FORMATTED LIFETIME CLAIM AMOUNT (DEPLOYMENT + CREATOR FEES)
-                if (data.lifetimeFees) ui.metricFees.innerText = data.lifetimeFees + " SOL"; 
+                // NEW: Use Total Daily Volume metric from backend
+                if (data.totalVolume !== undefined) {
+                    ui.metricFees.innerText = "$" + (parseFloat(data.totalVolume) || 0).toLocaleString();
+                } else if (data.lifetimeFees) {
+                    // Fallback if field missing
+                    ui.metricFees.innerText = data.lifetimeFees + " SOL"; 
+                }
                 
                 if (data.totalLaunches) ui.metricLaunches.innerText = data.totalLaunches; 
-                const solSpent = parseFloat(data.totalPumpBought || 0);
-                let tokensBought = "0";
-                if (pumpPriceCache > 0) { tokensBought = (solSpent / pumpPriceCache).toLocaleString('en-US', {maximumFractionDigits: 0}); } 
-                else { tokensBought = (solSpent * 30000000).toLocaleString('en-US', {maximumFractionDigits: 0}); }
-                ui.metricPump.innerText = tokensBought;
+                
+                // NEW: Use direct token amount from backend tracker
+                if (data.totalPumpTokensBought) {
+                    ui.metricPump.innerText = data.totalPumpTokensBought;
+                } else {
+                    const solSpent = parseFloat(data.totalPumpBought || 0);
+                    let tokensBought = "0";
+                    if (pumpPriceCache > 0) { tokensBought = (solSpent / pumpPriceCache).toLocaleString('en-US', {maximumFractionDigits: 0}); } 
+                    else { tokensBought = (solSpent * 30000000).toLocaleString('en-US', {maximumFractionDigits: 0}); }
+                    ui.metricPump.innerText = tokensBought;
+                }
+
                 allLogs = data.recentLogs; 
                 
                 if (data.currentFeeBalance) ui.trackBalance.innerText = data.currentFeeBalance;
@@ -1024,7 +1037,7 @@
         if (!name || name.trim().length === 0) return "Token Name is required.";
         if (name.length > 32) return "Token Name must be 32 characters or less.";
         if (!ticker || ticker.trim().length === 0) return "Ticker Symbol is required.";
-        if (ticker.length > 10) return "Ticker must be 10 characters or less.";
+        if (ticker.length >= 12) return "Ticker must be less than 12 characters.";
         if (description.length > 200) return "Description must be 200 characters or less.";
         const urlPattern = /^(https?:\/\/[^\s]+|([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(\/[^\s]*)?)$/;
         if (twitter && twitter.trim() !== '' && !urlPattern.test(twitter)) return "Invalid Twitter URL.";
