@@ -100,16 +100,6 @@ const ACTIVE_DATA_DIR = fs.existsSync(DISK_ROOT) ? DATA_DIR : './data/tokens';
 const ensureDir = (dir) => { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); };
 ensureDir(ACTIVE_DATA_DIR);
 
-const logStream = fs.createWriteStream(DEBUG_LOG_FILE, { flags: 'a' });
-function log(level, message, meta = {}) {
-    const timestamp = new Date().toISOString();
-    logStream.write(`[${timestamp}] [${level.toUpperCase()}] ${message} ${JSON.stringify(meta)}\n`);
-    const consoleMethod = level === 'error' ? console.error : console.log;
-    consoleMethod(`[${level.toUpperCase()}] ${message}`, meta);
-}
-const logger = { info: (m, d) => log('info', m, d), warn: (m, d) => log('warn', m, d), error: (m, d) => log('error', m, d) };
-
-
 let deployQueue;
 let redisConnection;
 try {
