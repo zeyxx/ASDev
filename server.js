@@ -16,7 +16,7 @@ const IORedis = require('ioredis');
 const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, createCloseAccountInstruction, createTransferInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.26.0-ATOMIC-CACHE";
+const VERSION = "v10.26.1-AIRDROP-LOGS";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -135,7 +135,7 @@ async function initDB() {
         CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, data TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS stats (key TEXT PRIMARY KEY, value REAL);
         CREATE TABLE IF NOT EXISTS token_holders (mint TEXT, holderPubkey TEXT, rank INTEGER, lastUpdated INTEGER, PRIMARY KEY (mint, holderPubkey));
-        CREATE TABLE IF NOT EXISTS airdrops (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL, recipients INTEGER, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS airdrops (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL, recipients INTEGER, totalPoints REAL, signatures TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('accumulatedFeesLamports', 0);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('lifetimeFeesLamports', 0);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('totalPumpBoughtLamports', 0);
@@ -143,7 +143,10 @@ async function initDB() {
         INSERT OR IGNORE INTO stats (key, value) VALUES ('lastClaimAmountLamports', 0);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('nextCheckTimestamp', 0);`); 
     
+    // Manual Migration for existing DBs
     try { await db.exec('ALTER TABLE tokens ADD COLUMN metadataUri TEXT'); } catch(e) {}
+    try { await db.exec('ALTER TABLE airdrops ADD COLUMN totalPoints REAL'); } catch(e) {}
+    try { await db.exec('ALTER TABLE airdrops ADD COLUMN signatures TEXT'); } catch(e) {}
 
     logger.info(`DB Initialized at ${DB_PATH}`);
 }
@@ -522,6 +525,16 @@ app.get('/api/health', async (req, res) => {
             nextCheckTime: cachedHealth.stats.nextCheckTimestamp || (Date.now() + 5*60*1000)
         }); 
     } catch (e) { res.status(500).json({ error: "DB Error" }); } 
+});
+
+// NEW: Airdrop Logs Endpoint
+app.get('/api/airdrop-logs', async (req, res) => {
+    try {
+        const logs = await db.all('SELECT * FROM airdrops ORDER BY timestamp DESC LIMIT 20');
+        res.json(logs);
+    } catch (e) {
+        res.status(500).json({ error: "DB Error" });
+    }
 });
 
 // [UPDATED] Check Holder Status - Includes ASDF Top 50 Check & Points Calculation
@@ -942,6 +955,7 @@ async function processAirdrop() {
         // 5. Build Transactions
         const BATCH_SIZE = 8; 
         let currentBatch = [];
+        let allSignatures = [];
         
         for (const user of userPoints) {
             const share = amountToDistributeInt.mul(new BN(user.points)).div(new BN(totalPoints));
@@ -950,18 +964,22 @@ async function processAirdrop() {
             currentBatch.push({ user: user.pubkey, amount: share });
 
             if (currentBatch.length >= BATCH_SIZE) {
-                await sendAirdropBatch(currentBatch, devPumpAta);
+                const sig = await sendAirdropBatch(currentBatch, devPumpAta);
+                if (sig) allSignatures.push(sig);
                 currentBatch = [];
                 await new Promise(r => setTimeout(r, 1000)); // Rate limit protection
             }
         }
 
         if (currentBatch.length > 0) {
-            await sendAirdropBatch(currentBatch, devPumpAta);
+            const sig = await sendAirdropBatch(currentBatch, devPumpAta);
+            if (sig) allSignatures.push(sig);
         }
 
-        // Log Airdrop
-        await db.run('INSERT INTO airdrops (amount, recipients, timestamp) VALUES (?, ?, ?)', [amountToDistribute, userPoints.length, new Date().toISOString()]);
+        // Log Airdrop with signatures
+        const signaturesStr = allSignatures.join(',');
+        await db.run('INSERT INTO airdrops (amount, recipients, totalPoints, signatures, timestamp) VALUES (?, ?, ?, ?, ?)', 
+            [amountToDistribute, userPoints.length, totalPoints, signaturesStr, new Date().toISOString()]);
 
     } catch (e) {
         logger.error("Airdrop Failed", { error: e.message });
@@ -986,10 +1004,12 @@ async function sendAirdropBatch(batch, sourceAta) {
     });
 
     try {
-        await sendTxWithRetry(tx, [devKeypair]);
-        logger.info(`Batch sent to ${batch.length} users`);
+        const sig = await sendTxWithRetry(tx, [devKeypair]);
+        logger.info(`Batch sent to ${batch.length} users. Sig: ${sig}`);
+        return sig;
     } catch(e) {
         logger.error(`Batch failed`, {e: e.message});
+        return null;
     }
 }
 
