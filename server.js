@@ -15,7 +15,7 @@ const IORedis = require('ioredis');
 const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, createCloseAccountInstruction } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.25.8-AIRDROP-READY";
+const VERSION = "v10.25.10-POINTS-SYSTEM";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -25,6 +25,7 @@ const DEPLOYMENT_FEE_SOL = 0.02;
 // Update Intervals (Env Vars or Default)
 const HOLDER_UPDATE_INTERVAL = process.env.HOLDER_UPDATE_INTERVAL ? parseInt(process.env.HOLDER_UPDATE_INTERVAL) : 120000;
 const METADATA_UPDATE_INTERVAL = process.env.METADATA_UPDATE_INTERVAL ? parseInt(process.env.METADATA_UPDATE_INTERVAL) : 60000; 
+const ASDF_UPDATE_INTERVAL = 300000; // 5 minutes
 
 // AUTH STRATEGY
 const PINATA_JWT = process.env.PINATA_JWT ? process.env.PINATA_JWT.trim() : null; 
@@ -57,6 +58,8 @@ const safePublicKey = (val, f, n) => { try { return new PublicKey(val); } catch 
 
 // Target: $PUMP
 const TARGET_PUMP_TOKEN = safePublicKey("pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn", "11111111111111111111111111111111", "TARGET_PUMP_TOKEN");
+// Target: $ASDF
+const ASDF_TOKEN_MINT = safePublicKey("9zB5wRarXMj86MymwLumSKA1Dx35zPqqKfcZtK1Spump", "11111111111111111111111111111111", "ASDF_TOKEN_MINT");
 
 const WALLET_9_5 = safePublicKey("9Cx7bw3opoGJ2z9uYbMLcfb1ukJbJN4CP5uBbDvWwu7Z", "11111111111111111111111111111111", "WALLET_9_5"); 
 const WALLET_0_5 = safePublicKey("9zT9rFzDA84K6hJJibcy9QjaFmM8Jm2LzdrvXEiBSq9g", "11111111111111111111111111111111", "WALLET_0_5"); 
@@ -84,6 +87,7 @@ const MAYHEM_FEE_RECIPIENT = safePublicKey("GesfTA3X2arioaHp8bbKdjG9vJtskViWACZo
 
 // --- Global State ---
 let lastBackendUpdate = Date.now(); 
+let asdfTop50Holders = new Set(); // Store top 50 holder public keys
 
 // --- DB & Directories ---
 const DATA_DIR = path.join(DISK_ROOT, 'tokens');
@@ -481,7 +485,49 @@ app.get('/api/health', async (req, res) => { try { const stats = await getStats(
         lastClaimAmount: (stats.lastClaimAmountLamports / LAMPORTS_PER_SOL).toFixed(4),
         nextCheckTime: stats.nextCheckTimestamp || (Date.now() + 5*60*1000)
     }); } catch (e) { res.status(500).json({ error: "DB Error" }); } });
-app.get('/api/check-holder', async (req, res) => { const { userPubkey } = req.query; if (!userPubkey) return res.json({ isHolder: false }); try { const result = await db.get('SELECT mint, rank FROM token_holders WHERE holderPubkey = ? LIMIT 1', userPubkey); res.json({ isHolder: !!result, ...(result || {}) }); } catch (e) { res.status(500).json({ error: "DB Error" }); } });
+
+// [UPDATED] Check Holder Status - Includes ASDF Top 50 Check & Points Calculation
+app.get('/api/check-holder', async (req, res) => { 
+    const { userPubkey } = req.query; 
+    if (!userPubkey) return res.json({ isHolder: false, isAsdfTop50: false, points: 0, multiplier: 1, heldPositionsCount: 0 }); 
+    
+    try { 
+        // 1. Get List of Top 10 Leaderboard Mints (Active)
+        const top10 = await db.all('SELECT mint FROM tokens ORDER BY volume24h DESC LIMIT 10');
+        const top10Mints = top10.map(t => t.mint);
+
+        let heldPositionsCount = 0;
+
+        if (top10Mints.length > 0) {
+            // 2. Count how many of these specific leaderboard tokens the user is a top holder of
+            // We use the IN clause with placeholders
+            const placeholders = top10Mints.map(() => '?').join(',');
+            const query = `SELECT count(*) as count FROM token_holders WHERE holderPubkey = ? AND mint IN (${placeholders})`;
+            const params = [userPubkey, ...top10Mints];
+            
+            const result = await db.get(query, params);
+            heldPositionsCount = result ? result.count : 0;
+        }
+        
+        // 3. Check ASDF Top 50 Status (from Memory Set)
+        const isAsdfTop50 = asdfTop50Holders.has(userPubkey);
+
+        // 4. Calculate Points
+        const multiplier = isAsdfTop50 ? 2 : 1;
+        const points = heldPositionsCount * multiplier;
+
+        res.json({ 
+            isHolder: heldPositionsCount > 0, 
+            isAsdfTop50: isAsdfTop50, 
+            points: points,
+            multiplier: multiplier,
+            heldPositionsCount: heldPositionsCount
+        }); 
+    } catch (e) { 
+        logger.error("Check Holder Error", {msg: e.message});
+        res.status(500).json({ error: "DB Error" }); 
+    } 
+});
 
 // [UPDATED] Return object with lastUpdate timestamp for "Synced" display
 app.get('/api/leaderboard', async (req, res) => { const { userPubkey } = req.query; try { const rows = await db.all('SELECT * FROM tokens ORDER BY volume24h DESC LIMIT 10'); const leaderboard = await Promise.all(rows.map(async (r) => { let isUserTopHolder = false; if (userPubkey) { const holderEntry = await db.get('SELECT rank FROM token_holders WHERE mint = ? AND holderPubkey = ?', [r.mint, userPubkey]); if (holderEntry) isUserTopHolder = true; } 
@@ -562,7 +608,7 @@ app.post('/api/deploy', async (req, res) => {
 
 // Loops
 
-// 1. Holder Scanner Loop
+// 1. Holder Scanner Loop (Internal Launches)
 setInterval(async () => { 
     if (!db) return; 
     try {
@@ -636,6 +682,61 @@ setInterval(async () => {
     }
     lastBackendUpdate = Date.now();
 }, METADATA_UPDATE_INTERVAL);
+
+// 3. ASDF Token Top 50 Loop
+// This runs every 5 minutes to be respectful of RPC limits while maintaining a fresh list
+setInterval(async () => {
+    try {
+        // Fetch all accounts for the mint
+        // Note: getProgramAccounts can be heavy. We use filters to limit data.
+        const accounts = await connection.getProgramAccounts(TOKEN_PROGRAM_ID, {
+            filters: [
+                { dataSize: 165 }, // Token Account Size
+                { memcmp: { offset: 0, bytes: ASDF_TOKEN_MINT.toBase58() } } // Mint Address
+            ],
+            encoding: 'base64'
+        });
+
+        // Parse and sort in memory
+        const holders = accounts.map(acc => {
+            const data = Buffer.from(acc.account.data);
+            const amount = new BN(data.slice(64, 72), 'le'); // Amount is at offset 64
+            const owner = new PublicKey(data.slice(32, 64)).toString(); // Owner is at offset 32
+            return { owner, amount };
+        }).sort((a, b) => b.amount.cmp(a.amount)); // Sort descending
+
+        // Take top 50
+        const top50 = holders.slice(0, 50).map(h => h.owner);
+        
+        // Update Global Set
+        asdfTop50Holders = new Set(top50);
+        logger.info(`✅ Updated ASDF Top 50 Holders. Count: ${asdfTop50Holders.size}`);
+
+    } catch (e) {
+        logger.error(`❌ ASDF Sync Failed: ${e.message}`);
+    }
+}, ASDF_UPDATE_INTERVAL);
+
+// Run ASDF sync immediately on startup
+setTimeout(async () => {
+    // Initial Run Logic duplicated from interval to ensure data is available quickly
+    try {
+        const accounts = await connection.getProgramAccounts(TOKEN_PROGRAM_ID, {
+            filters: [{ dataSize: 165 }, { memcmp: { offset: 0, bytes: ASDF_TOKEN_MINT.toBase58() } } ]
+        });
+        const holders = accounts.map(acc => {
+            const data = acc.account.data;
+            // Manual parsing of SPL Token Layout
+            const amount = new BN(data.slice(64, 72), 'le'); 
+            const owner = new PublicKey(data.slice(32, 64)).toString();
+            return { owner, amount };
+        }).sort((a, b) => b.amount.cmp(a.amount));
+        
+        asdfTop50Holders = new Set(holders.slice(0, 50).map(h => h.owner));
+        logger.info(`✅ Initial ASDF Sync Complete`);
+    } catch(e) { logger.error("Initial ASDF Sync Fail", e); }
+}, 5000);
+
 
 let isBuybackRunning = false;
 
