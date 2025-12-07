@@ -94,6 +94,8 @@ let isBuybackRunning = false;
 let isAirdropping = false;
 let globalTotalPoints = 0; // Tracks total score of all users for airdrop calculation
 let devPumpHoldings = 0; // Cached dev wallet pump holdings
+// New cache for expected airdrop value calculation
+let globalUserExpectedAirdrops = new Map();
 
 // --- DB & Directories ---
 if (!fs.existsSync(DISK_ROOT)) { if (!fs.existsSync('./data')) fs.mkdirSync('./data'); }
@@ -134,12 +136,12 @@ let db;
 async function initDB() {
     db = await open({ filename: DB_PATH, driver: sqlite3.Database });
     await db.exec('PRAGMA journal_mode = WAL;');
-    // UPDATED TABLE: Added expectedAirdrop column to token_holders
+    // REMOVED expectedAirdrop from token_holders for simpler logic, storing globally/in memory
     await db.exec(`CREATE TABLE IF NOT EXISTS tokens (mint TEXT PRIMARY KEY, userPubkey TEXT, name TEXT, ticker TEXT, description TEXT, twitter TEXT, website TEXT, image TEXT, isMayhemMode BOOLEAN, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, volume24h REAL DEFAULT 0, marketCap REAL DEFAULT 0, lastUpdated INTEGER DEFAULT 0, complete BOOLEAN DEFAULT 0, metadataUri TEXT);
         CREATE TABLE IF NOT EXISTS transactions (signature TEXT PRIMARY KEY, userPubkey TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, data TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS stats (key TEXT PRIMARY KEY, value REAL);
-        CREATE TABLE IF NOT EXISTS token_holders (mint TEXT, holderPubkey TEXT, rank INTEGER, expectedAirdrop REAL DEFAULT 0, lastUpdated INTEGER, PRIMARY KEY (mint, holderPubkey));
+        CREATE TABLE IF NOT EXISTS token_holders (mint TEXT, holderPubkey TEXT, rank INTEGER, lastUpdated INTEGER, PRIMARY KEY (mint, holderPubkey));
         CREATE TABLE IF NOT EXISTS airdrops (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL, recipients INTEGER, totalPoints REAL, signatures TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('accumulatedFeesLamports', 0);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('lifetimeFeesLamports', 0);
@@ -149,11 +151,11 @@ async function initDB() {
         INSERT OR IGNORE INTO stats (key, value) VALUES ('lastClaimAmountLamports', 0);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('nextCheckTimestamp', 0);`); 
     
-    // Manual Migration for existing DBs
+    // Manual Migration: Dropping old expectedAirdrop column if it exists
+    try { await db.exec('ALTER TABLE token_holders DROP COLUMN expectedAirdrop'); } catch(e) {}
     try { await db.exec('ALTER TABLE tokens ADD COLUMN metadataUri TEXT'); } catch(e) {}
     try { await db.exec('ALTER TABLE airdrops ADD COLUMN totalPoints REAL'); } catch(e) {}
     try { await db.exec('ALTER TABLE airdrops ADD COLUMN signatures TEXT'); } catch(e) {}
-    try { await db.exec('ALTER TABLE token_holders ADD COLUMN expectedAirdrop REAL DEFAULT 0'); } catch(e) {} // New column for expected Airdrop
     
     // Ensure new stat key exists for existing DBs
     try { await db.run("INSERT OR IGNORE INTO stats (key, value) VALUES ('lifetimeCreatorFeesLamports', 0)"); } catch(e) {}
@@ -246,6 +248,7 @@ async function updateNextCheckTime() {
 
 async function logPurchase(type, data) { 
     try { 
+        // UPDATED: Logging structure for better front-end rendering
         await db.run('INSERT INTO logs (type, data, timestamp) VALUES (?, ?, ?)', [type, JSON.stringify(data), new Date().toISOString()]); 
     } catch (e) { console.error("Log error", e); } 
 }
@@ -578,8 +581,9 @@ app.get('/api/all-eligible-users', async (req, res) => {
 
         // 2. Fetch all holders who hold a top 10 token
         const placeholders = top10Mints.map(() => '?').join(',');
+        // No longer fetching expectedAirdrop per token
         const rows = await db.all(`
-            SELECT holderPubkey, expectedAirdrop, COUNT(*) as positionCount 
+            SELECT holderPubkey, COUNT(*) as positionCount 
             FROM token_holders 
             WHERE mint IN (${placeholders}) 
             GROUP BY holderPubkey
@@ -598,14 +602,16 @@ app.get('/api/all-eligible-users', async (req, res) => {
             const multiplier = isAsdfTop50 ? 2 : 1;
             const points = row.positionCount * multiplier;
 
+            // Calculate expected airdrop using the global cache (globalUserExpectedAirdrops)
+            const expectedAirdrop = globalUserExpectedAirdrops.get(row.holderPubkey) || 0;
+
             if (points > 0) {
                 eligibleUsers.push({
                     pubkey: row.holderPubkey,
                     points: points,
                     positions: row.positionCount,
                     isAsdfTop50: isAsdfTop50,
-                    // Use the expectedAirdrop calculated and stored in the database during the last scan
-                    expectedAirdrop: row.expectedAirdrop || 0
+                    expectedAirdrop: expectedAirdrop
                 });
                 calculatedTotalPoints += points;
             }
@@ -640,27 +646,27 @@ app.get('/api/check-holder', async (req, res) => {
         const top10Mints = top10.map(t => t.mint);
 
         let heldPositionsCount = 0;
-        let totalExpectedAirdrop = 0;
-
+        
         if (top10Mints.length > 0) {
             const placeholders = top10Mints.map(() => '?').join(',');
             
-            // Query for aggregate information: count positions and SUM the expectedAirdrop from token_holders
-            const query = `SELECT COUNT(*) as count, SUM(expectedAirdrop) as totalExpectedAirdrop FROM token_holders WHERE holderPubkey = ? AND mint IN (${placeholders})`;
+            // Query only for position count
+            const query = `SELECT COUNT(*) as count FROM token_holders WHERE holderPubkey = ? AND mint IN (${placeholders})`;
             const params = [userPubkey, ...top10Mints];
             
             const result = await db.get(query, params);
             heldPositionsCount = result ? result.count : 0;
-            // Retrieve the summed expected airdrop from the pre-calculated field
-            totalExpectedAirdrop = result ? result.totalExpectedAirdrop || 0 : 0;
         }
         
         // 3. Check ASDF Top 50 Status (from Memory Set)
         const isAsdfTop50 = asdfTop50Holders.has(userPubkey);
 
-        // 4. Calculate Points (still needed for the points field, even though drop amount is pre-calculated)
+        // 4. Calculate Points
         const multiplier = isAsdfTop50 ? 2 : 1;
         const points = heldPositionsCount * multiplier;
+        
+        // FIX: Retrieve expected airdrop value from the global cache map
+        const totalExpectedAirdrop = globalUserExpectedAirdrops.get(userPubkey) || 0;
 
         res.json({ 
             isHolder: heldPositionsCount > 0, 
@@ -811,9 +817,10 @@ setInterval(async () => {
                         // Clear old holders for this specific mint
                         await db.run('DELETE FROM token_holders WHERE mint = ?', token.mint);
                         
-                        // Insert new holders (expectedAirdrop remains 0 temporarily)
+                        // Insert new holders 
                         let rank = 1;
                         for (const h of holdersToInsert) {
+                            // Note: expectedAirdrop is no longer stored here
                             await db.run(`INSERT OR IGNORE INTO token_holders (mint, holderPubkey, rank, lastUpdated) VALUES (?, ?, ?, ?)`, 
                                 [h.mint, h.owner, rank, Date.now()]);
                             rank++;
@@ -831,7 +838,7 @@ setInterval(async () => {
             await new Promise(r => setTimeout(r, 1000)); 
         }
 
-        // --- CALCULATE GLOBAL TOTAL POINTS ---
+        // --- CALCULATE GLOBAL TOTAL POINTS AND EXPECTED AIRDROP (Global Cache) ---
         let userPointMap = new Map();
         let tempTotalPoints = 0;
         
@@ -854,28 +861,16 @@ setInterval(async () => {
         globalTotalPoints = tempTotalPoints;
         logger.info(`Updated Global Points: ${globalTotalPoints}`);
 
-        // --- UPDATE EXPECTED AIRDROP FOR EACH USER ---
+        // --- UPDATE GLOBAL CACHE FOR EXPECTED AIRDROP ---
+        globalUserExpectedAirdrops.clear();
         if (globalTotalPoints > 0 && distributableAmount > 0) {
-            await db.run('BEGIN TRANSACTION');
-            try {
-                for (const [pubkey, points] of userPointMap.entries()) {
-                    const share = points / globalTotalPoints;
-                    const expectedAirdrop = share * distributableAmount;
-                    
-                    // Update ALL rows for this holderPubkey with the calculated expectedAirdrop
-                    await db.run(`UPDATE token_holders SET expectedAirdrop = ? WHERE holderPubkey = ?`, 
-                        [expectedAirdrop, pubkey]);
-                }
-                await db.run('COMMIT');
-            } catch (err) {
-                console.error("Airdrop Update Transaction Error", err);
-                await db.run('ROLLBACK');
+            for (const [pubkey, points] of userPointMap.entries()) {
+                const share = points / globalTotalPoints;
+                const expectedAirdrop = share * distributableAmount;
+                globalUserExpectedAirdrops.set(pubkey, expectedAirdrop);
             }
-        } else {
-             // If no points or no holdings, set expected airdrop to 0 for all
-             await db.run(`UPDATE token_holders SET expectedAirdrop = 0`);
         }
-
+        // No DB transaction needed for expectedAirdrop calculation, as it's cached in memory map.
 
     } catch(e) { console.error("Loop Error", e); }
 }, HOLDER_UPDATE_INTERVAL); 
@@ -1056,47 +1051,24 @@ async function processAirdrop() {
         const amountToDistribute = balance * 0.99;
         const amountToDistributeInt = new BN(amountToDistribute * 1000000); // 6 decimals
 
-        // 3. Get Eligible Users (Fetch aggregated points from the database, already calculated in Loop 1)
-        
-        // Fetch users and their calculated points (must recalculate points here to be safe, but can rely on the data used to calculate globalTotalPoints)
-        const top10 = await db.all('SELECT mint FROM tokens ORDER BY volume24h DESC LIMIT 10');
-        if (top10.length === 0) return;
-        
-        const top10Mints = top10.map(t => t.mint);
-        const placeholders = top10Mints.map(() => '?').join(',');
-        
-        const rows = await db.all(`
-            SELECT holderPubkey, COUNT(*) as positionCount 
-            FROM token_holders 
-            WHERE mint IN (${placeholders}) 
-            GROUP BY holderPubkey
-        `, top10Mints);
+        // 3. Get Eligible Users (Use cached map calculated in Loop 1)
+        const userPoints = Array.from(globalUserExpectedAirdrops.entries())
+            .map(([pubkey, expectedAirdrop]) => ({
+                pubkey: new PublicKey(pubkey),
+                // We need the raw points to calculate the share during the TX process
+                points: globalTotalPoints > 0 ? (expectedAirdrop / (amountToDistribute / globalTotalPoints)) : 0 
+            }))
+            .filter(user => user.points > 0);
 
-        if (rows.length === 0) return;
-
-        // 4. Recalculate Points and use the cached global total point value
-        let currentTotalPoints = 0; // Local check
-        const userPoints = [];
-
-        for (const row of rows) {
-            const isTop50 = asdfTop50Holders.has(row.holderPubkey);
-            if (row.holderPubkey === devKeypair.publicKey.toString()) { continue; }
-            
-            const points = row.positionCount * (isTop50 ? 2 : 1);
-            if (points > 0) {
-                userPoints.push({ pubkey: new PublicKey(row.holderPubkey), points });
-                currentTotalPoints += points;
-            }
-        }
 
         // Use the globally calculated point total
-        if (currentTotalPoints === 0) return;
+        if (globalTotalPoints === 0 || userPoints.length === 0) return;
 
         logger.info(` distributing ${amountToDistribute} PUMP to ${userPoints.length} users (Total Points: ${globalTotalPoints})`);
 
         const devPumpAta = await getAssociatedTokenAddress(TARGET_PUMP_TOKEN, devKeypair.publicKey);
 
-        // 5. Build Transactions
+        // 4. Build Transactions
         const BATCH_SIZE = 8; 
         let currentBatch = [];
         let allSignatures = [];
@@ -1160,6 +1132,16 @@ async function sendAirdropBatch(batch, sourceAta) {
 async function runPurchaseAndFees() {
     if (isBuybackRunning) return;
     isBuybackRunning = true;
+    let logData = {
+        status: 'SKIPPED',
+        reason: 'Unknown Error',
+        feesCollected: 0,
+        solSpent: 0,
+        transfer9_5: 0,
+        transfer0_5: 0,
+        pumpBuySig: null
+    };
+
     try {
         // 1. Poll On-Chain Fees (Bonding Curve + AMM)
         const { bcVault, ammVaultAuth, ammVaultAta } = getCreatorFeeVaults(devKeypair.publicKey);
@@ -1175,6 +1157,8 @@ async function runPurchaseAndFees() {
             const bal = await connection.getTokenAccountBalance(ammVaultAtaKey);
             if (bal.value.amount) totalPendingFees = totalPendingFees.add(new BN(bal.value.amount));
         } catch(e) {}
+        
+        logData.feesCollected = totalPendingFees.toNumber() / LAMPORTS_PER_SOL;
 
         const threshold = new BN(FEE_THRESHOLD_SOL * LAMPORTS_PER_SOL);
         
@@ -1189,35 +1173,57 @@ async function runPurchaseAndFees() {
              } catch(e) {}
 
              await new Promise(r => setTimeout(r, 2000));
+        } else {
+            logData.reason = `Threshold not met (Needed: ${FEE_THRESHOLD_SOL} SOL, Found: ${logData.feesCollected.toFixed(4)} SOL)`;
         }
 
         // 2. Check Balance & Buffer
         const realBalance = await connection.getBalance(devKeypair.publicKey);
         // CHANGE 2: Updated SAFETY_BUFFER to 0.05 SOL (50,000,000 lamports)
         const SAFETY_BUFFER = 50000000; 
+        const SAFETY_BUFFER_SOL = SAFETY_BUFFER / LAMPORTS_PER_SOL;
+
 
         if (realBalance < SAFETY_BUFFER) {
-            logger.warn(`⚠️ LOW BALANCE: ${(realBalance/LAMPORTS_PER_SOL).toFixed(4)} SOL < 0.05 SOL Buffer. Skipping Buyback/Airdrop to preserve gas/rent.`);
-            return; 
-        }
-
-        // 3. Execute Buyback
-        if (totalPendingFees.gte(threshold)) {
+            logData.reason = `LOW BALANCE: ${(realBalance/LAMPORTS_PER_SOL).toFixed(4)} SOL < ${SAFETY_BUFFER_SOL} SOL Buffer. Skipping Buyback/Airdrop.`;
+            logger.warn(`⚠️ ${logData.reason}`);
+            logData.status = 'LOW_BALANCE_SKIP';
+        } else if (totalPendingFees.gte(threshold)) {
+            // 3. Execute Buyback
              const spendable = realBalance - SAFETY_BUFFER; 
+             const MIN_SPEND = 0.05 * LAMPORTS_PER_SOL;
              
-             if (spendable > 0.05 * LAMPORTS_PER_SOL) { 
+             if (spendable > MIN_SPEND) { 
                  const transfer9_5 = Math.floor(spendable * 0.095); 
                  const transfer0_5 = Math.floor(spendable * 0.005); 
                  const solBuyAmountLamports = Math.floor(spendable * 0.90);
 
-                 await buyViaPumpAmm(solBuyAmountLamports, transfer9_5, transfer0_5, spendable);
+                 // Log data before attempt
+                 logData.solSpent = (solBuyAmountLamports + transfer9_5 + transfer0_5) / LAMPORTS_PER_SOL;
+                 logData.transfer9_5 = transfer9_5 / LAMPORTS_PER_SOL;
+                 logData.transfer0_5 = transfer0_5 / LAMPORTS_PER_SOL;
+
+                 const sig = await buyViaPumpAmm(solBuyAmountLamports, transfer9_5, transfer0_5, spendable);
+                 
+                 logData.pumpBuySig = sig;
+                 logData.status = sig ? 'SUCCESS' : 'BUY_FAIL';
+                 logData.reason = sig ? 'Flywheel Buyback Complete' : 'Buyback Transaction Failed';
+             } else {
+                 logData.reason = `Spendable SOL too low for efficient buyback (Spendable: ${(spendable/LAMPORTS_PER_SOL).toFixed(4)} SOL)`;
+                 logData.status = 'LOW_SPEND_SKIP';
              }
         } 
         
         // 4. Run Airdrop (Safe now)
         await processAirdrop();
+        logPurchase('FLYWHEEL_CYCLE', logData);
 
-    } catch(e) { logPurchase('ERROR', { message: e.message }); } 
+    } catch(e) { 
+        logData.status = 'CRITICAL_ERROR';
+        logData.reason = e.message;
+        logPurchase('FLYWHEEL_CYCLE', logData);
+        logger.error(`CRITICAL FLYWHEEL ERROR`, { message: e.message }); 
+    } 
     finally { 
         isBuybackRunning = false; 
         await updateNextCheckTime();
@@ -1328,11 +1334,12 @@ async function buyViaPumpAmm(amountIn, transfer9_5, transfer0_5, totalSpendable)
         const sig = await sendTxWithRetry(tx, [devKeypair]);
         await addPumpBought(0); // Tracking only, can update to actual bought amount if needed
         await recordClaim(totalSpendable); 
-        logPurchase('SUCCESS (AMM SWAP)', { totalSpent: totalSpendable, signature: sig });
-        await resetAccumulatedFees(totalSpendable);
+        // Note: Buyback log details are handled by runPurchaseAndFees wrapper
+        return sig;
 
     } catch (e) {
         logger.error("Pump AMM Swap Failed", { error: e.message });
+        return null;
     }
 }
 
