@@ -18,7 +18,7 @@ const IORedis = require('ioredis');
 const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, createAssociatedTokenAccountIdempotentInstruction, getAccount, createCloseAccountInstruction, createTransferInstruction, createTransferCheckedInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.26.17-AIRDROP-IDEMPOTENT-FIX";
+const VERSION = "v10.26.19-AIRDROP-HISTORY-UI";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -148,7 +148,7 @@ async function initDB() {
         CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT, data TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
         CREATE TABLE IF NOT EXISTS stats (key TEXT PRIMARY KEY, value REAL);
         CREATE TABLE IF NOT EXISTS token_holders (mint TEXT, holderPubkey TEXT, rank INTEGER, lastUpdated INTEGER, PRIMARY KEY (mint, holderPubkey));
-        CREATE TABLE IF NOT EXISTS airdrops (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL, recipients INTEGER, totalPoints REAL, signatures TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
+        CREATE TABLE IF NOT EXISTS airdrops (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL, recipients INTEGER, totalPoints REAL, signatures TEXT, details TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('accumulatedFeesLamports', 0);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('lifetimeFeesLamports', 0);
         INSERT OR IGNORE INTO stats (key, value) VALUES ('lifetimeCreatorFeesLamports', 0);
@@ -163,6 +163,7 @@ async function initDB() {
     try { await db.exec('ALTER TABLE tokens ADD COLUMN metadataUri TEXT'); } catch(e) {}
     try { await db.exec('ALTER TABLE airdrops ADD COLUMN totalPoints REAL'); } catch(e) {}
     try { await db.exec('ALTER TABLE airdrops ADD COLUMN signatures TEXT'); } catch(e) {}
+    try { await db.exec('ALTER TABLE airdrops ADD COLUMN details TEXT'); } catch(e) {}
     
     // Ensure new stat key exists for existing DBs
     try { await db.run("INSERT OR IGNORE INTO stats (key, value) VALUES ('lifetimeCreatorFeesLamports', 0)"); } catch(e) {}
@@ -1153,6 +1154,12 @@ async function processAirdrop() {
         let currentBatch = [];
         let allSignatures = [];
         
+        // Logging stats
+        const totalBatches = Math.ceil(userPoints.length / BATCH_SIZE);
+        let currentBatchIndex = 0;
+        let successfulBatches = 0;
+        let failedBatches = 0;
+        
         for (const user of userPoints) {
             const share = amountToDistributeInt.mul(new BN(user.points)).div(new BN(globalTotalPoints));
             if (share.eqn(0)) continue;
@@ -1160,22 +1167,41 @@ async function processAirdrop() {
             currentBatch.push({ user: user.pubkey, amount: share });
 
             if (currentBatch.length >= BATCH_SIZE) {
-                const sig = await sendAirdropBatch(currentBatch, devPumpAta);
-                if (sig) allSignatures.push(sig);
+                currentBatchIndex++;
+                const sig = await sendAirdropBatch(currentBatch, devPumpAta, currentBatchIndex, totalBatches);
+                if (sig) {
+                    allSignatures.push(sig);
+                    successfulBatches++;
+                } else {
+                    failedBatches++;
+                }
                 currentBatch = [];
                 await new Promise(r => setTimeout(r, 1000)); // Rate limit protection
             }
         }
 
         if (currentBatch.length > 0) {
-            const sig = await sendAirdropBatch(currentBatch, devPumpAta);
-            if (sig) allSignatures.push(sig);
+            currentBatchIndex++;
+            const sig = await sendAirdropBatch(currentBatch, devPumpAta, currentBatchIndex, totalBatches);
+            if (sig) {
+                allSignatures.push(sig);
+                successfulBatches++;
+            } else {
+                failedBatches++;
+            }
         }
 
-        // Log Airdrop with signatures
+        logger.info(`🏁 Airdrop Complete. Success: ${successfulBatches}, Failed: ${failedBatches}`);
+
+        // NEW: Serialize detailed status for frontend
+        const details = JSON.stringify({ success: successfulBatches, failed: failedBatches });
+
+        // Log Airdrop with signatures and details
         const signaturesStr = allSignatures.join(',');
-        await db.run('INSERT INTO airdrops (amount, recipients, totalPoints, signatures, timestamp) VALUES (?, ?, ?, ?, ?)', 
-            [amountToDistribute, userPoints.length, globalTotalPoints, signaturesStr, new Date().toISOString()]);
+        
+        // UPDATED INSERT to include details
+        await db.run('INSERT INTO airdrops (amount, recipients, totalPoints, signatures, details, timestamp) VALUES (?, ?, ?, ?, ?, ?)', 
+            [amountToDistribute, userPoints.length, globalTotalPoints, signaturesStr, details, new Date().toISOString()]);
 
     } catch (e) {
         logger.error("Airdrop Failed", { error: e.message });
@@ -1184,41 +1210,60 @@ async function processAirdrop() {
     }
 }
 
-async function sendAirdropBatch(batch, sourceAta) {
-    const tx = new Transaction();
-    addPriorityFee(tx);
-
-    // FIX: Derive recipient ATAs using Token-2022 Program ID
-    const atas = await Promise.all(batch.map(i => getAssociatedTokenAddress(TARGET_PUMP_TOKEN, i.user, false, TOKEN_PROGRAM_2022_ID)));
-    const infos = await connection.getMultipleAccountsInfo(atas);
-    
-    batch.forEach((item, idx) => {
-        const ata = atas[idx];
-        if (!infos[idx]) {
-            // FIX: Pass TOKEN_PROGRAM_2022_ID to creating instruction
-            // UPDATED: Use Idempotent instruction to prevent failure if account exists
-            tx.add(createAssociatedTokenAccountIdempotentInstruction(devKeypair.publicKey, ata, item.user, TARGET_PUMP_TOKEN, TOKEN_PROGRAM_2022_ID));
-        }
-        // FIX: Pass TOKEN_PROGRAM_2022_ID to transfer instruction
-        // UPDATED: Changed from createTransferInstruction to createTransferCheckedInstruction for safety
-        tx.add(createTransferCheckedInstruction(
-            sourceAta, 
-            TARGET_PUMP_TOKEN, 
-            ata, 
-            devKeypair.publicKey, 
-            BigInt(item.amount.toString()), 
-            6, // Decimals for PUMP token
-            [], 
-            TOKEN_PROGRAM_2022_ID
-        ));
-    });
-
+async function sendAirdropBatch(batch, sourceAta, batchIndex, totalBatches) {
+    // UPDATED: Wrap EVERYTHING in try/catch to prevent errors bubbling up and stopping the loop
     try {
+        const tx = new Transaction();
+        addPriorityFee(tx);
+
+        // FIX: Derive recipient ATAs using Token-2022 Program ID
+        const atas = await Promise.all(batch.map(i => getAssociatedTokenAddress(TARGET_PUMP_TOKEN, i.user, false, TOKEN_PROGRAM_2022_ID)));
+        
+        // UPDATED: Robust Retry for account info fetching (this often fails with 429s or timeouts)
+        let infos = null;
+        let retries = 3;
+        while(retries > 0) {
+            try {
+                infos = await connection.getMultipleAccountsInfo(atas);
+                break;
+            } catch(err) {
+                retries--;
+                if(retries === 0) throw new Error(`Failed to fetch account infos after 3 retries: ${err.message}`);
+                await new Promise(r => setTimeout(r, 1500));
+            }
+        }
+        
+        batch.forEach((item, idx) => {
+            const ata = atas[idx];
+            if (!infos[idx]) {
+                // FIX: Pass TOKEN_PROGRAM_2022_ID to creating instruction
+                // UPDATED: Use Idempotent instruction to prevent failure if account exists
+                tx.add(createAssociatedTokenAccountIdempotentInstruction(devKeypair.publicKey, ata, item.user, TARGET_PUMP_TOKEN, TOKEN_PROGRAM_2022_ID));
+            }
+            // FIX: Pass TOKEN_PROGRAM_2022_ID to transfer instruction
+            // UPDATED: Changed from createTransferInstruction to createTransferCheckedInstruction for safety
+            tx.add(createTransferCheckedInstruction(
+                sourceAta, 
+                TARGET_PUMP_TOKEN, 
+                ata, 
+                devKeypair.publicKey, 
+                BigInt(item.amount.toString()), 
+                6, // Decimals for PUMP token
+                [], 
+                TOKEN_PROGRAM_2022_ID
+            ));
+        });
+
         const sig = await sendTxWithRetry(tx, [devKeypair]);
-        logger.info(`Batch sent to ${batch.length} users. Sig: ${sig}`);
+        logger.info(`✅ Batch ${batchIndex}/${totalBatches} Sent. Sig: ${sig}`);
         return sig;
     } catch(e) {
-        logger.error(`Batch failed`, {e: e.message});
+        // DETAILED ERROR LOGGING
+        logger.error(`❌ Batch ${batchIndex}/${totalBatches} Failed`, {
+            error: e.message,
+            users: batch.map(u => u.user.toString()),
+            logs: e.logs || "No logs available" // Capture simulation logs if available
+        });
         return null;
     }
 }
