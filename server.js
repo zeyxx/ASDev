@@ -17,7 +17,7 @@ const IORedis = require('ioredis');
 const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, createCloseAccountInstruction, createTransferInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.26.17-TOKEN2022-FIX";
+const VERSION = "v10.26.17-AIRDROP-MATH-FIX";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -98,6 +98,8 @@ let globalTotalPoints = 0; // Tracks total score of all users for airdrop calcul
 let devPumpHoldings = 0; // Cached dev wallet pump holdings
 // New cache for expected airdrop value calculation
 let globalUserExpectedAirdrops = new Map();
+// NEW: Global Raw Points Map (Source of Truth for Airdrops)
+let globalUserPointsMap = new Map();
 
 // --- DB & Directories ---
 if (!fs.existsSync(DISK_ROOT)) { if (!fs.existsSync('./data')) fs.mkdirSync('./data'); }
@@ -239,8 +241,13 @@ async function resetAccumulatedFees(used) {
 async function recordClaim(amount) {
     if(db) {
         const now = Date.now();
-        await db.run('UPDATE stats SET value = ? WHERE key = ?', [now, 'lastClaimTimestamp']);
-        await db.run('UPDATE stats SET value = ? WHERE key = ?', [amount, 'lastClaimAmountLamports']);
+        // Updated query execution with try/catch block to prevent crashes if DB is locked
+        try {
+            await db.run('UPDATE stats SET value = ? WHERE key = ?', [now, 'lastClaimTimestamp']);
+            await db.run('UPDATE stats SET value = ? WHERE key = ?', [amount, 'lastClaimAmountLamports']);
+        } catch (e) {
+            logger.warn("DB Record Claim Warning", {error: e.message});
+        }
     }
 }
 
@@ -923,12 +930,18 @@ async function updateGlobalState() {
         
         // --- UPDATE GLOBAL CACHE FOR EXPECTED AIRDROP ---
         globalUserExpectedAirdrops.clear();
-        if (globalTotalPoints > 0 && distributableAmount > 0) {
-            for (const [pubkey, points] of userPointMap.entries()) {
-                const share = points / globalTotalPoints;
-                const expectedAirdrop = share * distributableAmount;
-                globalUserExpectedAirdrops.set(pubkey, expectedAirdrop);
-            }
+        globalUserPointsMap.clear(); // Clear points map
+        
+        // We always populate points map, even if distributable amount is 0
+        for (const [pubkey, points] of userPointMap.entries()) {
+             globalUserPointsMap.set(pubkey, points);
+             
+             // Only populate expected airdrop map if there is something to distribute
+             if (distributableAmount > 0 && globalTotalPoints > 0) {
+                 const share = points / globalTotalPoints;
+                 const expectedAirdrop = share * distributableAmount;
+                 globalUserExpectedAirdrops.set(pubkey, expectedAirdrop);
+             }
         }
         
         // logger.info(`DEBUG: User Map Size: ${globalUserExpectedAirdrops.size}`);
@@ -1114,12 +1127,12 @@ async function processAirdrop() {
         const amountToDistribute = balance * 0.99;
         const amountToDistributeInt = new BN(amountToDistribute * 1000000); // 6 decimals
 
-        // 3. Get Eligible Users (Use cached map calculated in Loop 1)
-        const userPoints = Array.from(globalUserExpectedAirdrops.entries())
-            .map(([pubkey, expectedAirdrop]) => ({
+        // 3. Get Eligible Users (Use RAW POINTS map calculated in Loop 1)
+        // FIX: Use points directly instead of reverse-engineering from expected currency value
+        const userPoints = Array.from(globalUserPointsMap.entries())
+            .map(([pubkey, points]) => ({
                 pubkey: new PublicKey(pubkey),
-                // We need the raw points to calculate the share during the TX process
-                points: globalTotalPoints > 0 ? (expectedAirdrop / (amountToDistribute / globalTotalPoints)) : 0 
+                points: points
             }))
             .filter(user => user.points > 0);
 
@@ -1233,11 +1246,15 @@ async function runPurchaseAndFees() {
         // 1. Always Claim if threshold met (Income generation)
         if (totalPendingFees.gte(threshold)) {
              logger.info(`CLAIM TRIGGERED...`);
-             await claimCreatorFees();
+             const claimed = await claimCreatorFees();
              
              // UPDATE CREATOR FEE STATS
              try {
-                await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [totalPendingFees.toNumber(), 'lifetimeCreatorFeesLamports']);
+                if (claimed) {
+                    await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [totalPendingFees.toNumber(), 'lifetimeCreatorFeesLamports']);
+                    // NEW: Record Claim immediately upon successful collection from vault
+                    await recordClaim(totalPendingFees.toNumber());
+                }
              } catch(e) {}
 
              await new Promise(r => setTimeout(r, 2000));
@@ -1459,7 +1476,7 @@ async function buyViaPumpAmm(solAmountIn, transfer9_5, transfer0_5, totalSpendab
             }
         } catch(e) { logger.warn("Failed to update pump bought stats", {error: e.message}); }
 
-        await recordClaim(totalSpendable); 
+        // REMOVED recordClaim call here to prevent double recording or overwriting with wrong amount
         return sig;
 
     } catch (e) {
