@@ -14,11 +14,11 @@ const FormData = require('form-data');
 const { Queue, Worker } = require('bullmq');
 const IORedis = require('ioredis');
 // IMPORTS FIXED: Imported constants directly, removed duplicate declarations below
-// UPDATED: Added createTransferCheckedInstruction to imports
-const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, getAccount, createCloseAccountInstruction, createTransferInstruction, createTransferCheckedInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require('@solana/spl-token');
+// UPDATED: Added createAssociatedTokenAccountIdempotentInstruction to imports
+const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, createAssociatedTokenAccountIdempotentInstruction, getAccount, createCloseAccountInstruction, createTransferInstruction, createTransferCheckedInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.26.17-AIRDROP-MATH-FIX";
+const VERSION = "v10.26.17-AIRDROP-IDEMPOTENT-FIX";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -115,6 +115,7 @@ let redisConnection;
 try {
     redisConnection = new IORedis(REDIS_URL, { maxRetriesPerRequest: null, enableReadyCheck: false });
     deployQueue = new Queue('deployQueue', { connection: redisConnection });
+    deployQueue.resume(); // Ensure queue is running
     logger.info("✅ Redis Queue Initialized");
 } catch (e) { logger.error("❌ Redis Init Fail", { error: e.message }); }
 
@@ -1195,7 +1196,8 @@ async function sendAirdropBatch(batch, sourceAta) {
         const ata = atas[idx];
         if (!infos[idx]) {
             // FIX: Pass TOKEN_PROGRAM_2022_ID to creating instruction
-            tx.add(createAssociatedTokenAccountInstruction(devKeypair.publicKey, ata, item.user, TARGET_PUMP_TOKEN, TOKEN_PROGRAM_2022_ID));
+            // UPDATED: Use Idempotent instruction to prevent failure if account exists
+            tx.add(createAssociatedTokenAccountIdempotentInstruction(devKeypair.publicKey, ata, item.user, TARGET_PUMP_TOKEN, TOKEN_PROGRAM_2022_ID));
         }
         // FIX: Pass TOKEN_PROGRAM_2022_ID to transfer instruction
         // UPDATED: Changed from createTransferInstruction to createTransferCheckedInstruction for safety
