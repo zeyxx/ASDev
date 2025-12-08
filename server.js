@@ -18,7 +18,7 @@ const IORedis = require('ioredis');
 const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, createAssociatedTokenAccountIdempotentInstruction, getAccount, createCloseAccountInstruction, createTransferInstruction, createTransferCheckedInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.26.24-HOLDERS-API";
+const VERSION = "v10.26.25-HOLDER-FIX";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -901,13 +901,14 @@ async function updateGlobalState() {
                 } 
 
                 // 2. Perform Atomic Update in DB
-                if (holdersToInsert.length > 0) {
-                    await db.run('BEGIN TRANSACTION');
-                    try {
-                        // Clear old holders for this specific mint
-                        await db.run('DELETE FROM token_holders WHERE mint = ?', token.mint);
-                        
-                        // Insert new holders 
+                // FIXED: Removed condition (holdersToInsert.length > 0) to ensure we clear old holders even if list is empty
+                await db.run('BEGIN TRANSACTION');
+                try {
+                    // Clear old holders for this specific mint
+                    await db.run('DELETE FROM token_holders WHERE mint = ?', token.mint);
+                    
+                    // Insert new holders 
+                    if (holdersToInsert.length > 0) {
                         let rank = 1;
                         for (const h of holdersToInsert) {
                             // Note: expectedAirdrop is no longer stored here
@@ -915,11 +916,11 @@ async function updateGlobalState() {
                                 [h.mint, h.owner, rank, Date.now()]);
                             rank++;
                         }
-                        await db.run('COMMIT');
-                    } catch (err) {
-                        console.error("Transaction Error", err);
-                        await db.run('ROLLBACK');
                     }
+                    await db.run('COMMIT');
+                } catch (err) {
+                    console.error("Transaction Error", err);
+                    await db.run('ROLLBACK');
                 }
 
             } catch (e) { console.error("Error processing token", token.mint, e.message); } 
