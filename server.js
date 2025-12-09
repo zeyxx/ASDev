@@ -21,7 +21,7 @@ const { TwitterApi } = require('twitter-api-v2');
 const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, createAssociatedTokenAccountIdempotentInstruction, getAccount, createCloseAccountInstruction, createTransferInstruction, createTransferCheckedInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.26.31-ASYNC-SOCIAL";
+const VERSION = "v10.26.33-TWITTER-FIX";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -481,6 +481,7 @@ if (redisConnection) {
         }
 
         try {
+            // FIX: Use readWrite client to ensure posting permissions
             const client = new TwitterApi({
                 appKey: process.env.TWITTER_APP_KEY,
                 appSecret: process.env.TWITTER_APP_SECRET,
@@ -488,9 +489,12 @@ if (redisConnection) {
                 accessSecret: process.env.TWITTER_ACCESS_SECRET,
             });
 
+            // Ensure we use the read-write client
+            const rwClient = client.readWrite;
+
             const tweetText = `🚀 NEW LAUNCH ALERT 🚀\n\nNAME: ${name} ($${ticker})\nCA: ${mint}\n\nTrade now on PumpFun:\nhttps://pump.fun/coin/${mint}\n\n#Solana #Memecoin #Ignition`;
             
-            const { data } = await client.v2.tweet(tweetText);
+            const { data } = await rwClient.v2.tweet(tweetText);
             const tweetUrl = `https://x.com/user/status/${data.id}`;
             
             // Save tweet URL to DB
@@ -500,7 +504,12 @@ if (redisConnection) {
             logger.info(`🐦 Tweet Posted: ${tweetUrl}`);
             return tweetUrl;
         } catch (e) {
-            logger.error("Tweet Failed", { error: e.message });
+            // Detailed error logging
+            if (e.code === 403) {
+                logger.error("Tweet Permission Error (403)", { error: "Check App Permissions (Read/Write) in Developer Portal." });
+            } else {
+                logger.error("Tweet Failed", { error: e.message, code: e.code });
+            }
             throw e; // Triggers retry
         }
     }, { connection: redisConnection });
@@ -1216,11 +1225,13 @@ function getCreatorFeeVaults(creator) {
     return { bcVault, ammVaultAuth, ammVaultAta };
 }
 
+// UPDATED: Now returns total claimed lamports
 async function claimCreatorFees() {
     const { bcVault, ammVaultAuth, ammVaultAta } = getCreatorFeeVaults(devKeypair.publicKey);
     const tx = new Transaction();
     addPriorityFee(tx);
     let claimedSomething = false;
+    let totalClaimed = 0;
 
     // 1. Claim Bonding Curve Fees (SOL)
     try {
@@ -1238,6 +1249,7 @@ async function claimCreatorFees() {
             ];
             tx.add(new TransactionInstruction({ keys, programId: PUMP_PROGRAM_ID, data: discriminator }));
             claimedSomething = true;
+            totalClaimed += bcInfo.lamports;
         }
     } catch(e) {}
 
@@ -1269,15 +1281,16 @@ async function claimCreatorFees() {
             tx.add(new TransactionInstruction({ keys, programId: PUMP_AMM_PROGRAM_ID, data: ammDiscriminator }));
             tx.add(createCloseAccountInstruction(myWsolAta, devKeypair.publicKey, devKeypair.publicKey));
             claimedSomething = true;
+            totalClaimed += Number(bal.value.amount);
         }
     } catch(e) {}
 
     if (claimedSomething) {
         tx.feePayer = devKeypair.publicKey;
         await sendTxWithRetry(tx, [devKeypair]);
-        return true;
+        return totalClaimed;
     }
-    return false;
+    return 0;
 }
 
 // --- NEW AUTOMATED AIRDROP LOGIC ---
@@ -1443,6 +1456,7 @@ async function sendAirdropBatch(batch, sourceAta, batchIndex, totalBatches) {
     }
 }
 
+// UPDATED: Logic to use only claimed fees
 async function runPurchaseAndFees() {
     if (isBuybackRunning) return;
     isBuybackRunning = true;
@@ -1476,17 +1490,18 @@ async function runPurchaseAndFees() {
 
         const threshold = new BN(FEE_THRESHOLD_SOL * LAMPORTS_PER_SOL);
         
+        let claimedAmount = 0;
+
         // 1. Always Claim if threshold met (Income generation)
         if (totalPendingFees.gte(threshold)) {
              logger.info(`CLAIM TRIGGERED...`);
-             const claimed = await claimCreatorFees();
+             claimedAmount = await claimCreatorFees(); // Store actual claimed amount
              
              // UPDATE CREATOR FEE STATS
              try {
-                if (claimed) {
-                    await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [totalPendingFees.toNumber(), 'lifetimeCreatorFeesLamports']);
-                    // NEW: Record Claim immediately upon successful collection from vault
-                    await recordClaim(totalPendingFees.toNumber());
+                if (claimedAmount > 0) {
+                    await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [claimedAmount, 'lifetimeCreatorFeesLamports']);
+                    await recordClaim(claimedAmount);
                 }
              } catch(e) {}
 
@@ -1497,18 +1512,22 @@ async function runPurchaseAndFees() {
 
         // 2. Check Balance & Buffer
         const realBalance = await connection.getBalance(devKeypair.publicKey);
-        // CHANGE 2: Updated SAFETY_BUFFER to 0.05 SOL (50,000,000 lamports)
         const SAFETY_BUFFER = 50000000; 
         const SAFETY_BUFFER_SOL = SAFETY_BUFFER / LAMPORTS_PER_SOL;
-
 
         if (realBalance < SAFETY_BUFFER) {
             logData.reason = `LOW BALANCE: ${(realBalance/LAMPORTS_PER_SOL).toFixed(4)} SOL < ${SAFETY_BUFFER_SOL} SOL Buffer. Skipping Buyback/Airdrop.`;
             logger.warn(`⚠️ ${logData.reason}`);
             logData.status = 'LOW_BALANCE_SKIP';
-        } else if (totalPendingFees.gte(threshold)) {
-            // 3. Execute Buyback
-             const spendable = realBalance - SAFETY_BUFFER; 
+        } else if (claimedAmount > 0) { 
+            // 3. Execute Buyback (ONLY IF CLAIMED)
+             let spendable = claimedAmount; // NEW: Spend what we just claimed
+
+             // Sanity check: Ensure we actually have this amount minus buffer (e.g. if gas ate it)
+             if (realBalance - spendable < SAFETY_BUFFER) {
+                 spendable = Math.max(0, realBalance - SAFETY_BUFFER);
+             }
+             
              const MIN_SPEND = 0.05 * LAMPORTS_PER_SOL;
              
              if (spendable > MIN_SPEND) { 
@@ -1527,7 +1546,7 @@ async function runPurchaseAndFees() {
                  logData.status = sig ? 'SUCCESS' : 'BUY_FAIL';
                  logData.reason = sig ? 'Flywheel Buyback Complete' : 'Buyback Transaction Failed';
              } else {
-                 logData.reason = `Spendable SOL too low for efficient buyback (Spendable: ${(spendable/LAMPORTS_PER_SOL).toFixed(4)} SOL)`;
+                 logData.reason = `Spendable SOL (Claimed) too low for efficient buyback (Spendable: ${(spendable/LAMPORTS_PER_SOL).toFixed(4)} SOL)`;
                  logData.status = 'LOW_SPEND_SKIP';
              }
         } 
