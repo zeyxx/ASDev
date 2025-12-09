@@ -21,7 +21,7 @@ const { TwitterApi } = require('twitter-api-v2');
 const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, createAssociatedTokenAccountIdempotentInstruction, getAccount, createCloseAccountInstruction, createTransferInstruction, createTransferCheckedInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.26.34-TWITTER-V1.1";
+const VERSION = "v10.26.35-TWITTER-V2-FIX";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -281,7 +281,7 @@ async function saveTokenData(pk, mint, meta) {
     try {
         // FIXED: Removed types (TEXT, BOOLEAN) from INSERT statement
         await db.run(`INSERT INTO tokens (mint, userPubkey, name, ticker, description, twitter, website, image, isMayhemMode, metadataUri) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, 
-            [mint, pk, meta.name, meta.ticker, meta.description, meta.twitter, meta.website, meta.image, meta.isMayhemMode, meta.metadataUri]);
+            [mint, pk, meta.name, meta.ticker, meta.description, meta.twitter, meta.website, meta.image, isMayhemMode, meta.metadataUri]);
         const shard = pk.slice(0, 2).toLowerCase(); const dir = path.join(ACTIVE_DATA_DIR, shard); ensureDir(dir);
         fs.writeFileSync(path.join(dir, `${mint}.json`), JSON.stringify({ userPubkey: pk, mint, metadata: meta, timestamp: new Date().toISOString() }, null, 2));
     } catch (e) { logger.error("Save Token Error", { err: e.message }); }
@@ -489,14 +489,17 @@ if (redisConnection) {
                 accessSecret: process.env.TWITTER_ACCESS_SECRET,
             });
 
-            // UPDATED: Use V1.1 API for posting as requested
+            // Ensure we use the read-write client
+            const rwClient = client.readWrite;
+
+            // UPDATED: Use V2 API (Standard) for posting
             const tweetText = `🚀 NEW LAUNCH ALERT 🚀\n\nNAME: ${name} ($${ticker})\nCA: ${mint}\n\nTrade now on PumpFun:\nhttps://pump.fun/coin/${mint}\n\n#Solana #Memecoin #Ignition`;
             
-            // Note: client.v1.tweet is the wrapper for POST statuses/update
-            const tweet = await client.v1.tweet(tweetText);
+            // Note: client.v2.tweet is the standard modern endpoint
+            const { data } = await rwClient.v2.tweet(tweetText);
             
-            // V1.1 returns id_str
-            const tweetUrl = `https://x.com/user/status/${tweet.id_str}`;
+            // V2 returns data.id
+            const tweetUrl = `https://x.com/user/status/${data.id}`;
             
             // Save tweet URL to DB
             if (db) {
@@ -505,11 +508,11 @@ if (redisConnection) {
             logger.info(`🐦 Tweet Posted: ${tweetUrl}`);
             return tweetUrl;
         } catch (e) {
-            // Detailed error logging for V1
-            if (e.code === 401) {
-                logger.error("Tweet Auth Error (401)", { error: "Check if TWITTER_APP_KEY is the API Key (Consumer Key), NOT Client ID." });
-            } else if (e.code === 403) {
-                 logger.error("Tweet Permission Error (403)", { error: "App might be restricted or using V1.1 without Essential/Elevated access." });
+            // Detailed error logging
+            if (e.code === 403) {
+                logger.error("Tweet Permission Error (403)", { error: "Check App Permissions (Read/Write) in Developer Portal." });
+            } else if (e.code === 401) {
+                logger.error("Tweet Auth Error (401)", { error: "Regenerate Keys & Tokens." });
             } else {
                 logger.error("Tweet Failed", { error: e.message, code: e.code });
             }
