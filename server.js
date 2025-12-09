@@ -281,7 +281,7 @@ async function saveTokenData(pk, mint, meta) {
     try {
         // FIXED: Removed types (TEXT, BOOLEAN) from INSERT statement
         await db.run(`INSERT INTO tokens (mint, userPubkey, name, ticker, description, twitter, website, image, isMayhemMode, metadataUri) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, 
-            [mint, pk, meta.name, meta.ticker, meta.description, meta.twitter, meta.website, meta.image, isMayhemMode, meta.metadataUri]);
+            [mint, pk, meta.name, meta.ticker, meta.description, meta.twitter, meta.website, meta.image, meta.isMayhemMode, meta.metadataUri]);
         const shard = pk.slice(0, 2).toLowerCase(); const dir = path.join(ACTIVE_DATA_DIR, shard); ensureDir(dir);
         fs.writeFileSync(path.join(dir, `${mint}.json`), JSON.stringify({ userPubkey: pk, mint, metadata: meta, timestamp: new Date().toISOString() }, null, 2));
     } catch (e) { logger.error("Save Token Error", { err: e.message }); }
