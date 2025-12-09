@@ -21,7 +21,7 @@ const { TwitterApi } = require('twitter-api-v2');
 const { getAssociatedTokenAddress, createAssociatedTokenAccountInstruction, createAssociatedTokenAccountIdempotentInstruction, getAccount, createCloseAccountInstruction, createTransferInstruction, createTransferCheckedInstruction, TOKEN_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID } = require('@solana/spl-token');
 
 // --- Config ---
-const VERSION = "v10.26.35-TWITTER-V2-FIX";
+const VERSION = "v10.26.36-JUPITER-FIX";
 const PORT = process.env.PORT || 3000;
 const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
 const DEV_WALLET_PRIVATE_KEY = process.env.DEV_WALLET_PRIVATE_KEY;
@@ -1576,12 +1576,14 @@ async function runPurchaseAndFees() {
 // NEW HELPER: Swap SOL to USDC via Jupiter Aggregator v6
 async function swapSolToUsdc(amountLamports) {
     try {
-        // CHANGED: Using PUBLIC Jupiter V6 Quote API (No API Key Required)
-        const quoteUrl = `https://quote-api.jup.ag/v6/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${USDC_MINT.toString()}&amount=${amountLamports}&slippageBps=100`;
+        // CHANGED: Using NEW Jupiter API Endpoint (MANUAL FIX 12/9)
+        // OLD: https://quote-api.jup.ag/v6/quote
+        const quoteUrl = `https://lite-api.jup.ag/swap/v1/quote?inputMint=So11111111111111111111111111111111111111112&outputMint=${USDC_MINT.toString()}&amount=${amountLamports}&slippageBps=100`;
         const quoteRes = await axios.get(quoteUrl);
         
-        // CHANGED: Using PUBLIC Jupiter V6 Swap API
-        const swapRes = await axios.post('https://quote-api.jup.ag/v6/swap', {
+        // CHANGED: Using NEW Jupiter API Endpoint
+        // OLD: https://quote-api.jup.ag/v6/swap
+        const swapRes = await axios.post('https://lite-api.jup.ag/swap/v1/swap', {
             quoteResponse: quoteRes.data,
             userPublicKey: devKeypair.publicKey.toString(),
             wrapAndUnwrapSol: true
