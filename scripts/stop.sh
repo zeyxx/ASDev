@@ -1,7 +1,7 @@
 #!/bin/bash
-# ASDF Launcher Stop Script
+# ASDev Stop Script
 
-echo "Stopping ASDF Launcher..."
+echo "Stopping ASDev..."
 
 # Stop Node.js server
 pkill -f "node src/index.js" 2>/dev/null || true

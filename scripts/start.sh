@@ -1,5 +1,5 @@
 #!/bin/bash
-# ASDF Launcher Startup Script
+# ASDev Startup Script
 # Starts Redis, Vanity Grinder, and the main server
 
 set -e
@@ -14,7 +14,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-echo -e "${GREEN}=== ASDF Launcher Startup ===${NC}"
+echo -e "${GREEN}=== ASDev Startup ===${NC}"
 
 # 1. Check Redis
 echo -e "${YELLOW}Checking Redis...${NC}"
@@ -59,6 +59,6 @@ if [ "$VANITY_GRINDER_ENABLED" = "true" ]; then
 fi
 
 # 3. Start the main server
-echo -e "${YELLOW}Starting ASDF Launcher...${NC}"
+echo -e "${YELLOW}Starting ASDev...${NC}"
 cd "$PROJECT_DIR"
 node src/index.js

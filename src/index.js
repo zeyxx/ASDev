@@ -1,5 +1,5 @@
 /**
- * ASDF Token Launcher
+ * ASDev
  * Main Entry Point
  */
 require('dotenv').config();
@@ -32,7 +32,7 @@ const globalState = {
  * Main initialization function
  */
 async function main() {
-    logger.info(`Starting ASDF Launcher ${config.VERSION}...`);
+    logger.info(`Starting ASDev ${config.VERSION}...`);
 
     // Initialize database
     await database.initDB();

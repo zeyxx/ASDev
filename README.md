@@ -1,4 +1,4 @@
-# ASDF Launcher
+# ASDev
 
 Token launcher for Solana. Ships tokens that end with `ASDF`. That's it.
 
