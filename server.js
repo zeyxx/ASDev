@@ -983,7 +983,6 @@ app.get('/api/check-holder', async (req, res) => {
         // FIX: Retrieve expected airdrop value from the global cache map
         const totalExpectedAirdrop = globalUserExpectedAirdrops.get(userPubkey) || 0;
         
-        // DEBUG: Explicitly Log what is being returned for this user
         logger.info("Check Holder:", { user: userPubkey, points, held: heldPositionsCount, created: createdPositionsCount });
 
         res.json({ 
@@ -1141,10 +1140,7 @@ async function updateGlobalState() {
             devPumpHoldings = 0; 
         }
         const distributableAmount = devPumpHoldings * 0.99;
-        
-        // DEBUG: LOG CRITICAL VALUES
-        // logger.info("DEBUG: Dev Pump Holdings:", devPumpHoldings);
-        
+
         // 1B. Update Individual Token Holders
         for (const token of topTokens) { 
             try { 
@@ -1261,10 +1257,8 @@ async function updateGlobalState() {
         }
         
         globalTotalPoints = tempTotalPoints;
-        
-        // DEBUG: LOG POINTS AND MAP SIZE
-        logger.info(`DEBUG: Global Points: ${globalTotalPoints}`);
-        
+        logger.info(`Global Points updated: ${globalTotalPoints}`);
+
         // --- UPDATE GLOBAL CACHE FOR EXPECTED AIRDROP ---
         globalUserExpectedAirdrops.clear();
         globalUserPointsMap.clear(); // Clear points map
@@ -1287,9 +1281,6 @@ async function updateGlobalState() {
                  }
              }
         }
-        
-        // logger.info(`DEBUG: User Map Size: ${globalUserExpectedAirdrops.size}`);
-        // No DB transaction needed for expectedAirdrop calculation, as it's cached in memory map.
 
     } catch(e) { console.error("Loop Error", e); }
 }

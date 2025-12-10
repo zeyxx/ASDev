@@ -49,13 +49,18 @@ async function main() {
     const devKeypair = Keypair.fromSecretKey(bs58.decode(config.DEV_WALLET_PRIVATE_KEY));
     const wallet = new Wallet(devKeypair);
 
-    logger.info(`RPC: ${config.HELIUS_API_KEY ? 'Helius' : 'Public'}`);
+    logger.info(`Network: ${config.SOLANA_NETWORK.toUpperCase()} | RPC: ${config.RPC_URL.includes('devnet') ? 'Devnet' : (config.HELIUS_API_KEY ? 'Helius' : 'Public Mainnet')}`);
     logger.info(`Wallet: ${devKeypair.publicKey.toString()}`);
 
     // Create Express app
     const app = express();
     app.use(cors());
     app.use(express.json({ limit: '50mb' }));
+
+    // Serve frontend
+    app.get('/', (req, res) => {
+        res.sendFile(path.join(__dirname, '..', 'asdev_frontend.html'));
+    });
 
     // Database helper functions
     const addFees = async (amount) => {

@@ -5,6 +5,7 @@ package-lock.json
 # Environment & Secrets
 .env
 .env.*
+!.env.example
 
 # Runtime data
 data/

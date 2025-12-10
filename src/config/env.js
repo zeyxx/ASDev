@@ -12,7 +12,10 @@ const config = {
 
     // Solana RPC
     HELIUS_API_KEY: process.env.HELIUS_API_KEY,
+    SOLANA_NETWORK: process.env.SOLANA_NETWORK || 'mainnet',
     get RPC_URL() {
+        if (process.env.RPC_URL) return process.env.RPC_URL;
+        if (this.SOLANA_NETWORK === 'devnet') return "https://api.devnet.solana.com";
         return this.HELIUS_API_KEY
             ? `https://mainnet.helius-rpc.com/?api-key=${this.HELIUS_API_KEY}`
             : "https://api.mainnet-beta.solana.com";
