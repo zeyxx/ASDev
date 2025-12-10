@@ -2,6 +2,34 @@
 
 Token launcher for Solana. Ships tokens that end with `ASDF`. That's it.
 
+## Quick Start (for the impatient)
+
+```bash
+# Clone
+git clone https://github.com/zeyxx/ASDev.git
+cd ASDev
+
+# Install Node stuff
+npm install
+
+# Install Rust (say yes to everything, it's fine)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source ~/.cargo/env
+
+# Build the vanity grinder
+cd asdf-vanity-grinder
+cargo build --release
+cd ..
+
+# Configure (edit .env with your keys)
+cp .env.example .env
+
+# Run
+npm start
+```
+
+That's it. You're done. Go touch grass.
+
 ## Requirements
 
 - Node.js 18+
