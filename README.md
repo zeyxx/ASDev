@@ -109,9 +109,87 @@ src/
 
 The Rust vanity grinder generates Solana keypairs ending with `ASDF`. It runs separately and the Node.js server fetches keypairs from it via HTTP.
 
+### Installing Rust
+
+If you don't have Rust installed:
+
+```bash
+# Install Rust (just say yes to everything)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# Reload your shell
+source ~/.cargo/env
+
+# Verify it works
+rustc --version
+```
+
+### Building the grinder
+
 ```bash
 cd asdf-vanity-grinder
+
+# Build in release mode (important for performance)
 cargo build --release
+
+# Binary will be at ./target/release/asdf-vanity-grinder
+```
+
+### Running the grinder
+
+```bash
+# Basic usage - starts HTTP server with keypair pool
+./target/release/asdf-vanity-grinder pool \
+  --file vanity_pool.json \
+  --port 8080 \
+  --api-key your_secret_key \
+  --min-pool 10 \
+  --threads 2
+
+# Low priority mode (recommended for production)
+nice -n 19 ionice -c 3 ./target/release/asdf-vanity-grinder pool \
+  --file vanity_pool.json \
+  --port 8080 \
+  --api-key your_secret_key \
+  --min-pool 10 \
+  --threads 1
+```
+
+### Grinder options
+
+| Option | Description |
+|--------|-------------|
+| `--file` | JSON file to store the keypair pool |
+| `--port` | HTTP server port (default: 8080) |
+| `--api-key` | API key for authentication |
+| `--min-pool` | Minimum pool size before warning |
+| `--threads` | Number of grinding threads |
+
+### Grinder endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Health check (no auth) |
+| `GET /stats` | Pool statistics |
+| `GET /mint` | Get next available keypair |
+| `POST /refill?count=N` | Generate N new keypairs |
+
+### Pre-generating keypairs
+
+If you want to pre-generate some keypairs before starting:
+
+```bash
+# Generate 50 keypairs and save to pool file
+./target/release/asdf-vanity-grinder pool \
+  --file vanity_pool.json \
+  --min-pool 50 \
+  --threads 4
+
+# Then start the server with the pre-filled pool
+./target/release/asdf-vanity-grinder pool \
+  --file vanity_pool.json \
+  --port 8080 \
+  --api-key your_secret_key
 ```
 
 ## Troubleshooting
