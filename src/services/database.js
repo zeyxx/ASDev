@@ -1,0 +1,234 @@
+/**
+ * Database Service
+ * SQLite database initialization and helper functions
+ */
+const sqlite3 = require('sqlite3').verbose();
+const { open } = require('sqlite');
+const path = require('path');
+const fs = require('fs');
+const config = require('../config/env');
+const logger = require('./logger');
+
+// Paths
+const DISK_ROOT = config.DISK_ROOT;
+const DATA_DIR = path.join(DISK_ROOT, 'tokens');
+const DB_PATH = path.join(DISK_ROOT, 'launcher.db');
+
+// Ensure directories exist
+const ensureDir = (dir) => {
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+};
+ensureDir(DISK_ROOT);
+ensureDir(DATA_DIR);
+
+// Database instance
+let db = null;
+
+// Cache
+const cache = new Map();
+
+async function smartCache(key, ttlSeconds, fetchFunction) {
+    const now = Date.now();
+    const cached = cache.get(key);
+
+    if (cached && (now - cached.timestamp) < ttlSeconds * 1000) {
+        return cached.value;
+    }
+
+    try {
+        const value = await fetchFunction();
+        cache.set(key, { value, timestamp: now });
+        return value;
+    } catch (e) {
+        if (cached) return cached.value;
+        throw e;
+    }
+}
+
+async function initDB() {
+    try {
+        db = await open({
+            filename: DB_PATH,
+            driver: sqlite3.Database
+        });
+
+        // Create tables
+        await db.exec(`
+            CREATE TABLE IF NOT EXISTS tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                userPubkey TEXT,
+                mint TEXT UNIQUE,
+                ticker TEXT,
+                name TEXT,
+                description TEXT,
+                twitter TEXT,
+                website TEXT,
+                metadataUri TEXT,
+                imageCid TEXT,
+                signature TEXT,
+                timestamp INTEGER,
+                volume24h REAL DEFAULT 0,
+                priceUsd REAL DEFAULT 0,
+                marketCap REAL DEFAULT 0,
+                holderCount INTEGER DEFAULT 0
+            )
+        `);
+
+        await db.exec(`
+            CREATE TABLE IF NOT EXISTS token_holders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mint TEXT,
+                holderPubkey TEXT,
+                balance TEXT,
+                rank INTEGER,
+                updatedAt INTEGER,
+                UNIQUE(mint, holderPubkey)
+            )
+        `);
+
+        await db.exec(`
+            CREATE TABLE IF NOT EXISTS stats (
+                key TEXT PRIMARY KEY,
+                value REAL DEFAULT 0
+            )
+        `);
+
+        // Initialize stats
+        const statsKeys = [
+            'accumulatedFeesLamports',
+            'lifetimeFeesLamports',
+            'totalPumpBoughtLamports',
+            'totalPumpTokensBought',
+            'lastClaimTimestamp',
+            'lastClaimAmount',
+            'nextCheckTime'
+        ];
+
+        for (const key of statsKeys) {
+            await db.run(
+                'INSERT OR IGNORE INTO stats (key, value) VALUES (?, 0)',
+                [key]
+            );
+        }
+
+        await db.exec(`
+            CREATE TABLE IF NOT EXISTS flywheel_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER,
+                status TEXT,
+                feesCollected REAL,
+                solSpent REAL,
+                tokensBought TEXT,
+                pumpBuySig TEXT,
+                transfer9_5 REAL,
+                transfer0_5 REAL,
+                reason TEXT
+            )
+        `);
+
+        await db.exec(`
+            CREATE TABLE IF NOT EXISTS airdrop_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER,
+                eligibleCount INTEGER,
+                totalTokens TEXT,
+                successCount INTEGER,
+                failCount INTEGER,
+                signature TEXT
+            )
+        `);
+
+        await db.exec(`
+            CREATE TABLE IF NOT EXISTS asdf_holders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                holderPubkey TEXT UNIQUE,
+                balance TEXT,
+                rank INTEGER,
+                percentage REAL,
+                updatedAt INTEGER
+            )
+        `);
+
+        logger.info(`DB Initialized at ${DB_PATH}`);
+    } catch (e) {
+        logger.error('Database initialization failed', { error: e.message });
+        throw e;
+    }
+}
+
+// Stats helpers
+async function addFees(amount) {
+    if (!db) return;
+    await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [amount, 'accumulatedFeesLamports']);
+    await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [amount, 'lifetimeFeesLamports']);
+}
+
+async function addPumpBought(amount) {
+    if (!db) return;
+    await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [amount, 'totalPumpBoughtLamports']);
+}
+
+async function getTotalLaunches() {
+    if (!db) return 0;
+    const res = await db.get('SELECT COUNT(*) as count FROM tokens');
+    return res ? res.count : 0;
+}
+
+async function getStats() {
+    if (!db) return {};
+    const rows = await db.all('SELECT key, value FROM stats');
+    return rows.reduce((acc, r) => ({ ...acc, [r.key]: r.value }), {});
+}
+
+async function resetAccumulatedFees(used) {
+    if (!db) return;
+    await db.run('UPDATE stats SET value = value - ? WHERE key = ?', [used, 'accumulatedFeesLamports']);
+}
+
+async function recordClaim(amount) {
+    if (!db) return;
+    await db.run('UPDATE stats SET value = ? WHERE key = ?', [Date.now(), 'lastClaimTimestamp']);
+    await db.run('UPDATE stats SET value = ? WHERE key = ?', [amount, 'lastClaimAmount']);
+}
+
+async function updateNextCheckTime() {
+    if (!db) return;
+    const nextCheck = Date.now() + (5 * 60 * 1000); // 5 minutes
+    await db.run('UPDATE stats SET value = ? WHERE key = ?', [nextCheck, 'nextCheckTime']);
+    return nextCheck;
+}
+
+async function logPurchase(type, data) {
+    if (!db) return;
+    await db.run(`
+        INSERT INTO flywheel_logs (timestamp, status, feesCollected, solSpent, tokensBought, pumpBuySig, transfer9_5, transfer0_5, reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [Date.now(), data.status, data.feesCollected || 0, data.solSpent || 0, data.tokensBought || '0', data.pumpBuySig || null, data.transfer9_5 || 0, data.transfer0_5 || 0, data.reason || null]);
+}
+
+async function saveTokenData(pubkey, mint, metadata) {
+    if (!db) return;
+    await db.run(`
+        INSERT OR REPLACE INTO tokens (userPubkey, mint, ticker, name, description, twitter, website, metadataUri, imageCid, signature, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [pubkey, mint, metadata.ticker, metadata.name, metadata.description, metadata.twitter, metadata.website, metadata.uri, metadata.imageCid, metadata.signature, Date.now()]);
+}
+
+module.exports = {
+    initDB,
+    getDB: () => db,
+    smartCache,
+    addFees,
+    addPumpBought,
+    getTotalLaunches,
+    getStats,
+    resetAccumulatedFees,
+    recordClaim,
+    updateNextCheckTime,
+    logPurchase,
+    saveTokenData,
+    DATA_DIR,
+    DB_PATH,
+};

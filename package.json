@@ -1,9 +1,11 @@
 {
-  "name": "pump-launcher",
-  "version": "10.26.33",
-  "main": "server.js",
+  "name": "asdf-launcher",
+  "version": "10.26.35",
+  "main": "src/index.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node src/index.js",
+    "start:legacy": "node server.js",
+    "dev": "node --watch src/index.js"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.29.0",
