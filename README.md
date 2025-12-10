@@ -16,7 +16,8 @@ npm install
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source ~/.cargo/env
 
-# Build the vanity grinder
+# Clone and build the vanity grinder
+git clone https://github.com/zeyxx/asdf-vanity-grinder.git
 cd asdf-vanity-grinder
 cargo build --release
 cd ..
