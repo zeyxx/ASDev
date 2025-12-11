@@ -110,6 +110,71 @@ function init(deps) {
         }
     });
 
+    // Services status check
+    router.get('/services-status', async (req, res) => {
+        const services = {
+            database: { status: 'unknown', latency: null },
+            redis: { status: 'unknown', latency: null },
+            solana_rpc: { status: 'unknown', latency: null },
+            vanity_grinder: { status: 'disabled', latency: null }
+        };
+
+        // Check Database
+        try {
+            const start = Date.now();
+            await db.get('SELECT 1');
+            services.database = { status: 'online', latency: Date.now() - start };
+        } catch (e) {
+            services.database = { status: 'offline', error: e.message };
+        }
+
+        // Check Redis
+        try {
+            const start = Date.now();
+            const redisConn = redis.getConnection?.();
+            if (redisConn) {
+                await redisConn.ping();
+                services.redis = { status: 'online', latency: Date.now() - start };
+            } else {
+                services.redis = { status: 'not_configured' };
+            }
+        } catch (e) {
+            services.redis = { status: 'offline', error: e.message };
+        }
+
+        // Check Solana RPC
+        try {
+            const start = Date.now();
+            await connection.getLatestBlockhash('finalized');
+            services.solana_rpc = { status: 'online', latency: Date.now() - start };
+        } catch (e) {
+            services.solana_rpc = { status: 'offline', error: e.message };
+        }
+
+        // Check Vanity Grinder (if enabled)
+        if (config.VANITY_GRINDER_ENABLED && config.VANITY_GRINDER_URL) {
+            try {
+                const axios = require('axios');
+                const start = Date.now();
+                const response = await axios.get(`${config.VANITY_GRINDER_URL}/health`, { timeout: 5000 });
+                services.vanity_grinder = {
+                    status: response.data?.status === 'ok' ? 'online' : 'degraded',
+                    latency: Date.now() - start,
+                    poolSize: response.data?.poolSize
+                };
+            } catch (e) {
+                services.vanity_grinder = { status: 'offline', error: e.message };
+            }
+        }
+
+        const allOnline = Object.values(services).every(s => s.status === 'online' || s.status === 'disabled' || s.status === 'not_configured');
+        res.json({
+            overall: allOnline ? 'healthy' : 'degraded',
+            services,
+            timestamp: new Date().toISOString()
+        });
+    });
+
     // Debug logs (protected endpoint)
     router.get('/debug/logs', adminAuth, (req, res) => {
         const fs = require('fs');

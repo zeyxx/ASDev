@@ -6,6 +6,7 @@ const express = require('express');
 const { PublicKey, LAMPORTS_PER_SOL } = require('@solana/web3.js');
 const config = require('../config/env');
 const { pinata, moderation, vanity, redis, logger } = require('../services');
+const { isValidPubkey } = require('./solana');
 
 const router = express.Router();
 
@@ -79,6 +80,12 @@ function init(deps) {
 
             if (!metadataUri) {
                 return res.status(400).json({ error: "Missing metadata URI" });
+            }
+            if (!userPubkey || !isValidPubkey(userPubkey)) {
+                return res.status(400).json({ error: "Invalid Solana address" });
+            }
+            if (!userTx || typeof userTx !== 'string') {
+                return res.status(400).json({ error: "Invalid transaction signature" });
             }
 
             try {

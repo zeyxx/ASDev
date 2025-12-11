@@ -96,70 +96,6 @@ async function main() {
         res.sendFile(path.join(__dirname, '..', 'asdev_frontend.html'));
     });
 
-    // Database helper functions
-    const addFees = async (amount) => {
-        if (!db) return;
-        await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [amount, 'accumulatedFeesLamports']);
-        await db.run('UPDATE stats SET value = value + ? WHERE key = ?', [amount, 'lifetimeFeesLamports']);
-    };
-
-    const getStats = async () => {
-        if (!db) return {};
-        const rows = await db.all('SELECT key, value FROM stats');
-        return rows.reduce((acc, r) => ({ ...acc, [r.key]: r.value }), {});
-    };
-
-    const getTotalLaunches = async () => {
-        if (!db) return 0;
-        const res = await db.get('SELECT COUNT(*) as count FROM tokens');
-        return res ? res.count : 0;
-    };
-
-    const recordClaim = async (amount) => {
-        if (!db) return;
-        await db.run('UPDATE stats SET value = ? WHERE key = ?', [Date.now(), 'lastClaimTimestamp']);
-        await db.run('UPDATE stats SET value = ? WHERE key = ?', [amount, 'lastClaimAmountLamports']);
-    };
-
-    const updateNextCheckTime = async () => {
-        if (!db) return;
-        const nextCheck = Date.now() + (5 * 60 * 1000);
-        await db.run('UPDATE stats SET value = ? WHERE key = ?', [nextCheck, 'nextCheckTimestamp']);
-    };
-
-    const logPurchase = async (type, data) => {
-        if (!db) return;
-        try {
-            await db.run(
-                'INSERT INTO logs (type, data, timestamp) VALUES (?, ?, ?)',
-                [type, JSON.stringify(data), new Date().toISOString()]
-            );
-        } catch (e) {
-            logger.error("Log error", { error: e.message });
-        }
-    };
-
-    const saveTokenData = async (pubkey, mint, metadata) => {
-        if (!db) return;
-        try {
-            await db.run(`
-                INSERT INTO tokens (mint, userPubkey, name, ticker, description, twitter, website, image, isMayhemMode, metadataUri)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `, [mint, pubkey, metadata.name, metadata.ticker, metadata.description,
-                metadata.twitter, metadata.website, metadata.image, metadata.isMayhemMode, metadata.metadataUri]);
-
-            // Save to file system
-            const shard = pubkey.slice(0, 2).toLowerCase();
-            const dir = path.join(database.DATA_DIR, shard);
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-            fs.writeFileSync(
-                path.join(dir, `${mint}.json`),
-                JSON.stringify({ userPubkey: pubkey, mint, metadata, timestamp: new Date().toISOString() }, null, 2)
-            );
-        } catch (e) {
-            logger.error("Save Token Error", { error: e.message });
-        }
-    };
 
     const refundUser = async (userPubkeyStr, reason) => {
         try {
@@ -189,13 +125,13 @@ async function main() {
         db,
         redis,
         globalState,
-        addFees,
-        getStats,
-        getTotalLaunches,
-        recordClaim,
-        updateNextCheckTime,
-        logPurchase,
-        saveTokenData,
+        addFees: database.addFees,
+        getStats: database.getStats,
+        getTotalLaunches: database.getTotalLaunches,
+        recordClaim: database.recordClaim,
+        updateNextCheckTime: database.updateNextCheckTime,
+        logPurchase: database.logPurchase,
+        saveTokenData: database.saveTokenData,
         refundUser,
     };
 

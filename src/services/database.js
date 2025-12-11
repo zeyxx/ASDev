@@ -66,7 +66,8 @@ async function initDB() {
                 twitter TEXT,
                 website TEXT,
                 metadataUri TEXT,
-                imageCid TEXT,
+                image TEXT,
+                isMayhemMode INTEGER DEFAULT 0,
                 signature TEXT,
                 timestamp INTEGER,
                 volume24h REAL DEFAULT 0,
@@ -220,8 +221,7 @@ async function updateNextCheckTime() {
     return nextCheck;
 }
 
-// Note: This logs to flywheel_logs table with structured columns.
-// The deps.logPurchase in index.js logs to generic 'logs' table and is used by flywheel.js
+// Log to flywheel_logs table with structured columns
 async function logFlywheelCycle(data) {
     if (!db) return;
     await db.run(`
@@ -230,12 +230,43 @@ async function logFlywheelCycle(data) {
     `, [Date.now(), data.status, data.feesCollected || 0, data.solSpent || 0, data.tokensBought || '0', data.pumpBuySig || null, data.transfer9_5 || 0, data.transfer0_5 || 0, data.reason || null]);
 }
 
+// Generic logging to logs table
+async function logPurchase(type, data) {
+    if (!db) return;
+    try {
+        await db.run(
+            'INSERT INTO logs (type, data, timestamp) VALUES (?, ?, ?)',
+            [type, JSON.stringify(data), new Date().toISOString()]
+        );
+    } catch (e) {
+        logger.error("Log error", { error: e.message });
+    }
+}
+
 async function saveTokenData(pubkey, mint, metadata) {
     if (!db) return;
-    await db.run(`
-        INSERT OR REPLACE INTO tokens (userPubkey, mint, ticker, name, description, twitter, website, metadataUri, imageCid, signature, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [pubkey, mint, metadata.ticker, metadata.name, metadata.description, metadata.twitter, metadata.website, metadata.uri, metadata.imageCid, metadata.signature, Date.now()]);
+    const fs = require('fs');
+    const path = require('path');
+
+    try {
+        await db.run(`
+            INSERT OR REPLACE INTO tokens (userPubkey, mint, ticker, name, description, twitter, website, metadataUri, image, isMayhemMode, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [pubkey, mint, metadata.ticker, metadata.name, metadata.description,
+            metadata.twitter, metadata.website, metadata.metadataUri,
+            metadata.image, metadata.isMayhemMode ? 1 : 0, Date.now()]);
+
+        // Save to file system for backup
+        const shard = pubkey.slice(0, 2).toLowerCase();
+        const dir = path.join(DATA_DIR, shard);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(
+            path.join(dir, `${mint}.json`),
+            JSON.stringify({ userPubkey: pubkey, mint, metadata, timestamp: new Date().toISOString() }, null, 2)
+        );
+    } catch (e) {
+        logger.error("Save Token Error", { error: e.message });
+    }
 }
 
 module.exports = {
@@ -250,6 +281,7 @@ module.exports = {
     recordClaim,
     updateNextCheckTime,
     logFlywheelCycle,
+    logPurchase,
     saveTokenData,
     DATA_DIR,
     DB_PATH,

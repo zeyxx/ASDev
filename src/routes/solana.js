@@ -7,6 +7,17 @@ const { PublicKey } = require('@solana/web3.js');
 
 const router = express.Router();
 
+// Validate Solana public key format
+const isValidPubkey = (pubkey) => {
+    if (!pubkey || typeof pubkey !== 'string') return false;
+    try {
+        new PublicKey(pubkey);
+        return true;
+    } catch {
+        return false;
+    }
+};
+
 /**
  * Initialize routes with dependencies
  */
@@ -19,6 +30,9 @@ function init(deps) {
             const { pubkey } = req.query;
             if (!pubkey) {
                 return res.status(400).json({ error: "Missing pubkey" });
+            }
+            if (!isValidPubkey(pubkey)) {
+                return res.status(400).json({ error: "Invalid Solana address format" });
             }
             const balance = await connection.getBalance(new PublicKey(pubkey));
             res.json({ balance });
@@ -40,4 +54,4 @@ function init(deps) {
     return router;
 }
 
-module.exports = { init };
+module.exports = { init, isValidPubkey };

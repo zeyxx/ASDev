@@ -3,6 +3,7 @@
  * Token listing, leaderboard, and holder endpoints
  */
 const express = require('express');
+const { isValidPubkey } = require('./solana');
 
 const router = express.Router();
 
@@ -36,30 +37,37 @@ function init(deps) {
     // Leaderboard
     router.get('/leaderboard', async (req, res) => {
         const { userPubkey } = req.query;
+        // Validate userPubkey if provided
+        if (userPubkey && !isValidPubkey(userPubkey)) {
+            return res.status(400).json({ error: "Invalid Solana address" });
+        }
         try {
             const rows = await db.all('SELECT * FROM tokens ORDER BY volume24h DESC LIMIT 10');
-            const leaderboard = await Promise.all(rows.map(async (r) => {
-                let isUserTopHolder = false;
-                if (userPubkey) {
-                    const holderEntry = await db.get(
-                        'SELECT rank FROM token_holders WHERE mint = ? AND holderPubkey = ?',
-                        [r.mint, userPubkey]
-                    );
-                    if (holderEntry) isUserTopHolder = true;
-                }
-                return {
-                    mint: r.mint,
-                    creator: r.userPubkey,
-                    name: r.name,
-                    ticker: r.ticker,
-                    image: r.image,
-                    metadataUri: r.metadataUri,
-                    price: (r.marketCap / 1000000000).toFixed(6),
-                    marketCap: r.marketCap || 0,
-                    volume: r.volume24h,
-                    isUserTopHolder,
-                    complete: !!r.complete
-                };
+
+            // Batch query for user holder status (avoid N+1)
+            let userHoldings = new Set();
+            if (userPubkey && rows.length > 0) {
+                const mints = rows.map(r => r.mint);
+                const placeholders = mints.map(() => '?').join(',');
+                const holdings = await db.all(
+                    `SELECT mint FROM token_holders WHERE holderPubkey = ? AND mint IN (${placeholders})`,
+                    [userPubkey, ...mints]
+                );
+                userHoldings = new Set(holdings.map(h => h.mint));
+            }
+
+            const leaderboard = rows.map(r => ({
+                mint: r.mint,
+                creator: r.userPubkey,
+                name: r.name,
+                ticker: r.ticker,
+                image: r.image,
+                metadataUri: r.metadataUri,
+                price: (r.marketCap / 1000000000).toFixed(6),
+                marketCap: r.marketCap || 0,
+                volume: r.volume24h,
+                isUserTopHolder: userHoldings.has(r.mint),
+                complete: !!r.complete
             }));
             res.json({ tokens: leaderboard, lastUpdate: globalState.lastBackendUpdate });
         } catch (e) {
@@ -114,6 +122,9 @@ function init(deps) {
                 isHolder: false, isAsdfTop50: false, points: 0,
                 multiplier: 1, heldPositionsCount: 0, createdPositionsCount: 0, expectedAirdrop: 0
             });
+        }
+        if (!isValidPubkey(userPubkey)) {
+            return res.status(400).json({ error: "Invalid Solana address" });
         }
 
         try {

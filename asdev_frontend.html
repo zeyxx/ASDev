@@ -556,6 +556,25 @@
     const clearAllIntervals = () => { activeIntervals.forEach(id => clearInterval(id)); activeIntervals.length = 0; };
     window.addEventListener('beforeunload', clearAllIntervals);
 
+    // API retry helper with exponential backoff
+    const fetchWithRetry = async (url, options = {}, maxRetries = 3, baseDelay = 1000) => {
+        let lastError;
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+            try {
+                const res = await fetch(url, options);
+                if (!res.ok && res.status >= 500) throw new Error(`Server error: ${res.status}`);
+                return res;
+            } catch (err) {
+                lastError = err;
+                if (attempt < maxRetries - 1) {
+                    const delay = baseDelay * Math.pow(2, attempt);
+                    await new Promise(r => setTimeout(r, delay));
+                }
+            }
+        }
+        throw lastError;
+    };
+
     const ui = {
         connectBtn: document.getElementById('connect-btn'), walletUI: document.getElementById('wallet-ui'), walletAddr: document.getElementById('wallet-addr'), walletBal: document.getElementById('wallet-bal'),
         refreshBtn: document.getElementById('refresh-btn'), disconnectBtn: document.getElementById('disconnect-btn'), deployBtn: document.getElementById('deploy-btn'),
@@ -630,7 +649,7 @@
     const updateLeaderboard = async () => {
         try {
             const endpoint = `${BACKEND_URL}/api/leaderboard${userPubkey ? '?userPubkey='+userPubkey : ''}`;
-            const res = await fetch(endpoint);
+            const res = await fetchWithRetry(endpoint);
             const data = await res.json();
             
             // Update DB status based on successful data retrieval
@@ -739,10 +758,10 @@
         list.innerHTML = '<div class="text-center text-orange-400 p-4">Loading holder data...</div>';
 
         try {
-            const res = await fetch(`${BACKEND_URL}/api/token-holders/${mint}`);
+            const res = await fetch(`${BACKEND_URL}/api/token-holders/${escapeHtml(mint)}`);
             if (!res.ok) throw new Error("Failed to fetch");
             const holders = await res.json();
-            
+
             if (holders.length === 0) {
                 list.innerHTML = '<div class="text-center text-gray-500 p-4">No holder data available yet.</div>';
                 return;
@@ -750,16 +769,15 @@
 
             let html = '<table class="w-full text-left text-orange-200">';
             html += '<thead><tr class="text-orange-500 border-b border-orange-800/50"><th class="py-2">#</th><th class="py-2">Wallet</th></tr></thead><tbody>';
-            
+
             holders.forEach(h => {
-                // Display only first 5 chars as requested
-                const shortWallet = h.holderPubkey.slice(0, 5); 
+                const shortWallet = escapeHtml(h.holderPubkey?.slice(0, 5) || '?????');
                 html += `<tr class="border-b border-orange-900/20 hover:bg-orange-900/10">
-                            <td class="py-1 text-orange-400 font-bold w-12">${h.rank}</td>
+                            <td class="py-1 text-orange-400 font-bold w-12">${parseInt(h.rank) || 0}</td>
                             <td class="py-1 font-mono">${shortWallet}...</td>
                          </tr>`;
             });
-            
+
             html += '</tbody></table>';
             list.innerHTML = html;
         } catch (e) {
@@ -869,8 +887,8 @@
         let status = 'ONLINE';
         let error = null;
 
-        try { 
-            const res = await fetch(`${BACKEND_URL}/api/health`); 
+        try {
+            const res = await fetchWithRetry(`${BACKEND_URL}/api/health`);
             if (res.ok) { 
                 const data = await res.json(); 
                 
@@ -961,8 +979,8 @@
             systemStatus.solana_rpc = 'N/A';
             return; 
         }
-        try { 
-            const res = await fetch(`${BACKEND_URL}/api/balance?pubkey=${userPubkey}`);
+        try {
+            const res = await fetchWithRetry(`${BACKEND_URL}/api/balance?pubkey=${userPubkey}`);
             if (!res.ok) throw new Error("Balance fetch failed");
             const data = await res.json();
             const solBalance = data.balance / solanaWeb3.LAMPORTS_PER_SOL;
@@ -1185,10 +1203,10 @@
                                 <tr class="border-b border-orange-800/30 hover:bg-orange-900/20">
                                     <td class="p-2">${index + 1}</td>
                                     <td class="p-2">
-                                        <img src="${imgSrc}" onerror="this.src='https://placehold.co/32x32/333/fff?text=?'" class="token-img-sm" alt="icon">
-                                        <a href="${PUMPFUN_URL_BASE}${item.mint}" target="_blank" class="font-bold underline text-white">${item.ticker}</a> (${item.name})
+                                        <img src="${escapeHtml(imgSrc)}" onerror="this.src='https://placehold.co/32x32/333/fff?text=?'" class="token-img-sm" alt="icon">
+                                        <a href="${PUMPFUN_URL_BASE}${escapeHtml(item.mint)}" target="_blank" class="font-bold underline text-white">${escapeHtml(item.ticker)}</a> (${escapeHtml(item.name)})
                                     </td>
-                                    <td class="p-2 text-orange-400">${item.userPubkey.slice(0, 5)}...</td>
+                                    <td class="p-2 text-orange-400">${escapeHtml(item.userPubkey?.slice(0, 5) || '?????')}...</td>
                                     <td class="p-2 text-right font-bold text-green-400">${formatMcap(item.marketCap)}</td>
                                     <td class="p-2 text-right font-bold">$${(parseFloat(item.volume) || 0).toLocaleString()}</td>
                                     <td class="p-2 text-right">${badge}</td>
@@ -1203,7 +1221,7 @@
                 throw new Error("Failed to fetch all launches.");
             }
         } catch(e) {
-            ui.modalAllLaunchesContent.innerHTML = `<div class="text-center text-red-400 p-4">Error: ${e.message}</div>`;
+            ui.modalAllLaunchesContent.innerHTML = `<div class="text-center text-red-400 p-4">Error: ${escapeHtml(e.message)}</div>`;
         }
     };
     window.toggleAllLaunchesModal = toggleAllLaunchesModal;
@@ -1241,7 +1259,7 @@
                                 return `
                                 <tr class="border-b border-purple-800/30 hover:bg-purple-900/20">
                                     <td class="p-2">${index + 1}</td>
-                                    <td class="p-2 text-white font-bold">${user.pubkey.slice(0, 5)}...</td>
+                                    <td class="p-2 text-white font-bold">${escapeHtml(user.pubkey?.slice(0, 5) || '?????')}...</td>
                                     <td class="p-2 text-right">${user.positions}</td>
                                     <td class="p-2 text-right text-blue-400">${(user.created || 0) * 2}</td>
                                     <td class="p-2 text-right">${multiplierBadge}</td>
@@ -1258,7 +1276,7 @@
                 throw new Error("Failed to fetch eligible users.");
             }
         } catch(e) {
-            ui.modalAllEligibleUsersContent.innerHTML = `<div class="text-center text-red-400 p-4">Error: ${e.message}</div>`;
+            ui.modalAllEligibleUsersContent.innerHTML = `<div class="text-center text-red-400 p-4">Error: ${escapeHtml(e.message)}</div>`;
         }
     };
     window.toggleAllEligibleUsersModal = toggleAllEligibleUsersModal;
@@ -1519,22 +1537,22 @@
         showStatus("PREPARING METADATA...", 'normal');
 
         try {
-            const prepRes = await fetch(`${BACKEND_URL}/api/prepare-metadata`, {
+            const prepRes = await fetchWithRetry(`${BACKEND_URL}/api/prepare-metadata`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name, ticker, description, twitter, website, image: imageBase64 })
-            });
-            
+            }, 2); // 2 retries for metadata upload
+
             if (!prepRes.ok) {
                 const errData = await prepRes.json();
                 throw new Error(errData.error || "Metadata upload failed");
             }
             const { metadataUri } = await prepRes.json();
-            
+
             ui.deployBtn.innerText = "SIGNING FEE TRANSACTION...";
             showStatus("METADATA READY. PLEASE SIGN WALLET...", 'normal');
 
-            const bhRes = await fetch(`${BACKEND_URL}/api/blockhash`);
+            const bhRes = await fetchWithRetry(`${BACKEND_URL}/api/blockhash`);
             if (!bhRes.ok) throw new Error("Failed to fetch blockhash from backend");
             const { blockhash } = await bhRes.json();
 
@@ -1564,7 +1582,7 @@
             ui.deployBtn.innerText = "QUEUING DEPLOYMENT...";
             showStatus("PAYMENT CONFIRMED. QUEUING...", 'normal');
 
-            const deployRes = await fetch(`${BACKEND_URL}/api/deploy`, {
+            const deployRes = await fetchWithRetry(`${BACKEND_URL}/api/deploy`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -1572,9 +1590,9 @@
                     metadataUri,
                     userTx: txSignature,
                     userPubkey: userPubkey,
-                    isMayhemMode: isMayhemMode 
+                    isMayhemMode: isMayhemMode
                 })
-            });
+            }, 2);
 
             const data = await deployRes.json();
             if (data.success && data.jobId) {

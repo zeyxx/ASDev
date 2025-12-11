@@ -54,21 +54,32 @@ cp .env.example .env
 
 ## Configuration
 
-Create a `.env` file:
+Create a `.env` file (see `.env.example` for all options):
 
 ```env
 # Required
 DEV_WALLET_PRIVATE_KEY=your_base58_private_key
-RPC_URL=https://api.mainnet-beta.solana.com
+
+# Network (mainnet or devnet)
+SOLANA_NETWORK=mainnet
+# Or use a custom RPC URL:
+# RPC_URL=https://api.mainnet-beta.solana.com
 
 # Optional but nice to have
 HELIUS_API_KEY=your_helius_key
 PORT=3000
 
+# Security
+CORS_ORIGINS=*                    # Comma-separated origins
+ADMIN_API_KEY=your_admin_key      # For debug endpoints
+
 # Vanity grinder (for ASDF addresses)
 VANITY_GRINDER_ENABLED=true
 VANITY_GRINDER_URL=http://localhost:8080
 VANITY_GRINDER_API_KEY=your_api_key
+
+# IPFS (Pinata)
+PINATA_JWT=your_jwt
 
 # Twitter (if you want social features)
 TWITTER_API_KEY=...
@@ -76,6 +87,15 @@ TWITTER_API_SECRET=...
 TWITTER_ACCESS_TOKEN=...
 TWITTER_ACCESS_SECRET=...
 ```
+
+## Security Features
+
+- **Rate limiting**: 100 requests/15min on API routes, 3/min on deploy
+- **Helmet**: Security headers enabled
+- **CORS**: Configurable allowed origins
+- **XSS Protection**: DOMPurify sanitization on frontend
+- **Input validation**: Solana address validation on all pubkey inputs
+- **Admin auth**: Debug endpoints require API key in production
 
 ## Running
 
@@ -117,11 +137,19 @@ VANITY_GRINDER_ENABLED=true ./scripts/start.sh
 |----------|--------------|
 | `GET /api/health` | Is it alive? |
 | `GET /api/version` | What version? |
+| `GET /api/services-status` | Check all external services (DB, Redis, RPC, Vanity) |
 | `GET /api/blockhash` | Fresh blockhash |
-| `GET /api/leaderboard` | Top tokens |
-| `GET /api/recent-launches` | Recent tokens |
-| `POST /api/prep-create-coin` | Prepare token launch |
-| `POST /api/sign-tx` | Sign and send transaction |
+| `GET /api/balance?pubkey=...` | Get wallet balance |
+| `GET /api/leaderboard` | Top 10 tokens by volume |
+| `GET /api/all-launches` | All launched tokens |
+| `GET /api/recent-launches` | Ticker feed |
+| `GET /api/token-holders/:mint` | Top 50 holders for a token |
+| `GET /api/check-holder?userPubkey=...` | Check airdrop eligibility |
+| `GET /api/all-eligible-users` | All users eligible for airdrop |
+| `POST /api/prepare-metadata` | Upload metadata to IPFS |
+| `POST /api/deploy` | Queue token deployment |
+| `GET /api/job-status/:id` | Check deployment job status |
+| `GET /api/debug/logs` | Debug logs (requires admin key) |
 
 ## Project Structure
 
