@@ -95,6 +95,15 @@ async function initDB() {
             )
         `);
 
+        await db.exec(`
+            CREATE TABLE IF NOT EXISTS logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                type TEXT,
+                data TEXT,
+                timestamp TEXT
+            )
+        `);
+
         // Initialize stats
         const statsKeys = [
             'accumulatedFeesLamports',
@@ -102,8 +111,8 @@ async function initDB() {
             'totalPumpBoughtLamports',
             'totalPumpTokensBought',
             'lastClaimTimestamp',
-            'lastClaimAmount',
-            'nextCheckTime'
+            'lastClaimAmountLamports',
+            'nextCheckTimestamp'
         ];
 
         for (const key of statsKeys) {
@@ -131,12 +140,12 @@ async function initDB() {
         await db.exec(`
             CREATE TABLE IF NOT EXISTS airdrop_logs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp INTEGER,
-                eligibleCount INTEGER,
-                totalTokens TEXT,
-                successCount INTEGER,
-                failCount INTEGER,
-                signature TEXT
+                amount TEXT,
+                recipients INTEGER,
+                totalPoints REAL,
+                signatures TEXT,
+                details TEXT,
+                timestamp TEXT
             )
         `);
 
@@ -148,6 +157,17 @@ async function initDB() {
                 rank INTEGER,
                 percentage REAL,
                 updatedAt INTEGER
+            )
+        `);
+
+        await db.exec(`
+            CREATE TABLE IF NOT EXISTS transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                signature TEXT UNIQUE,
+                userPubkey TEXT,
+                type TEXT DEFAULT 'deployment',
+                amount REAL,
+                timestamp INTEGER
             )
         `);
 
@@ -190,17 +210,19 @@ async function resetAccumulatedFees(used) {
 async function recordClaim(amount) {
     if (!db) return;
     await db.run('UPDATE stats SET value = ? WHERE key = ?', [Date.now(), 'lastClaimTimestamp']);
-    await db.run('UPDATE stats SET value = ? WHERE key = ?', [amount, 'lastClaimAmount']);
+    await db.run('UPDATE stats SET value = ? WHERE key = ?', [amount, 'lastClaimAmountLamports']);
 }
 
 async function updateNextCheckTime() {
     if (!db) return;
     const nextCheck = Date.now() + (5 * 60 * 1000); // 5 minutes
-    await db.run('UPDATE stats SET value = ? WHERE key = ?', [nextCheck, 'nextCheckTime']);
+    await db.run('UPDATE stats SET value = ? WHERE key = ?', [nextCheck, 'nextCheckTimestamp']);
     return nextCheck;
 }
 
-async function logPurchase(type, data) {
+// Note: This logs to flywheel_logs table with structured columns.
+// The deps.logPurchase in index.js logs to generic 'logs' table and is used by flywheel.js
+async function logFlywheelCycle(data) {
     if (!db) return;
     await db.run(`
         INSERT INTO flywheel_logs (timestamp, status, feesCollected, solSpent, tokensBought, pumpBuySig, transfer9_5, transfer0_5, reason)
@@ -227,7 +249,7 @@ module.exports = {
     resetAccumulatedFees,
     recordClaim,
     updateNextCheckTime,
-    logPurchase,
+    logFlywheelCycle,
     saveTokenData,
     DATA_DIR,
     DB_PATH,

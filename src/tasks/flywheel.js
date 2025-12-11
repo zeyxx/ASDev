@@ -173,7 +173,7 @@ async function processAirdrop(deps) {
 
         const details = JSON.stringify({ success: successfulBatches, failed: failedBatches });
         await db.run(
-            'INSERT INTO airdrops (amount, recipients, totalPoints, signatures, details, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
+            'INSERT INTO airdrop_logs (amount, recipients, totalPoints, signatures, details, timestamp) VALUES (?, ?, ?, ?, ?, ?)',
             [amountToDistribute, userPoints.length, globalState.totalPoints, allSignatures.join(','), details, new Date().toISOString()]
         );
     } catch (e) {

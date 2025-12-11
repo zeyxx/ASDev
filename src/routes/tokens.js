@@ -229,7 +229,7 @@ function init(deps) {
     // Airdrop logs
     router.get('/airdrop-logs', async (req, res) => {
         try {
-            const logs = await db.all('SELECT * FROM airdrops ORDER BY timestamp DESC LIMIT 20');
+            const logs = await db.all('SELECT * FROM airdrop_logs ORDER BY timestamp DESC LIMIT 20');
             res.json(logs);
         } catch (e) {
             res.status(500).json({ error: "DB Error" });
