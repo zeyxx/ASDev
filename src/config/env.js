@@ -4,6 +4,14 @@
  */
 require('dotenv').config();
 
+// Environment validation
+const requiredEnvVars = ['DEV_WALLET_PRIVATE_KEY'];
+const missingVars = requiredEnvVars.filter(v => !process.env[v]);
+if (missingVars.length > 0) {
+    console.error(`FATAL: Missing required environment variables: ${missingVars.join(', ')}`);
+    process.exit(1);
+}
+
 const config = {
     // Server
     VERSION: "v10.26.35-TWITTER-V2-FIX",
@@ -61,6 +69,10 @@ const config = {
 
     // UI
     HEADER_IMAGE_URL: process.env.HEADER_IMAGE_URL || "https://placehold.co/60x60/d97706/ffffff?text=LOGO",
+
+    // Security
+    CORS_ORIGINS: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) || ['*'],
+    ADMIN_API_KEY: process.env.ADMIN_API_KEY,
 
     // Data Storage
     get DISK_ROOT() {

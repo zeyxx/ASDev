@@ -7,6 +7,12 @@
     "start:legacy": "node server.js",
     "dev": "node --watch src/index.js"
   },
+  "overrides": {
+    "bigint-buffer": "^1.1.5"
+  },
+  "notes": {
+    "security": "bigint-buffer vulnerability (GHSA-3gc7-fjrx-p6mg) is a known Solana ecosystem issue with no clean fix available. The affected toBigIntLE() function is not directly used in this application."
+  },
   "dependencies": {
     "@coral-xyz/anchor": "^0.29.0",
     "@solana/spl-token": "^0.4.0",

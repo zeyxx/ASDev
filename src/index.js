@@ -62,7 +62,13 @@ async function main() {
         contentSecurityPolicy: false, // Disable CSP for frontend flexibility
         crossOriginEmbedderPolicy: false
     }));
-    app.use(cors());
+
+    // CORS configuration
+    const corsOptions = {
+        origin: config.CORS_ORIGINS.includes('*') ? true : config.CORS_ORIGINS,
+        optionsSuccessStatus: 200
+    };
+    app.use(cors(corsOptions));
     app.use(express.json({ limit: '50mb' }));
 
     // Rate limiting

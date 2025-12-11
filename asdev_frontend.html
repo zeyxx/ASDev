@@ -550,6 +550,12 @@
         return div.innerHTML;
     };
 
+    // Interval manager for cleanup
+    const activeIntervals = [];
+    const registerInterval = (id) => { activeIntervals.push(id); return id; };
+    const clearAllIntervals = () => { activeIntervals.forEach(id => clearInterval(id)); activeIntervals.length = 0; };
+    window.addEventListener('beforeunload', clearAllIntervals);
+
     const ui = {
         connectBtn: document.getElementById('connect-btn'), walletUI: document.getElementById('wallet-ui'), walletAddr: document.getElementById('wallet-addr'), walletBal: document.getElementById('wallet-bal'),
         refreshBtn: document.getElementById('refresh-btn'), disconnectBtn: document.getElementById('disconnect-btn'), deployBtn: document.getElementById('deploy-btn'),
@@ -935,7 +941,7 @@
         }
     };
 
-    setInterval(() => {
+    registerInterval(setInterval(() => {
         if (nextCheckTime > 0) {
             const now = Date.now();
             const diff = nextCheckTime - now;
@@ -945,10 +951,10 @@
                 ui.trackNextCheck.innerText = `${min}:${sec < 10 ? '0' + sec : sec}`;
             } else {
                 if (diff > -10000) ui.trackNextCheck.innerText = "Checking...";
-                else ui.trackNextCheck.innerText = "Wait..."; 
+                else ui.trackNextCheck.innerText = "Wait...";
             }
         }
-    }, 1000);
+    }, 1000));
 
     const refreshWalletBalance = async () => { 
         if (!userPubkey) { 
@@ -1003,7 +1009,7 @@
     };
     window.refreshAllData = refreshAllData;
 
-    setInterval(refreshAllData, 60000);
+    registerInterval(setInterval(refreshAllData, 60000));
     refreshAllData();
 
     ui.refreshBtn.onclick = () => refreshAllData();
@@ -1586,11 +1592,23 @@
 
     // POLL JOB STATUS
     const pollJobStatus = async (jobId) => {
+        let attempts = 0;
+        const maxAttempts = 150; // 5 minutes max (2s * 150)
+
         const interval = setInterval(async () => {
+            attempts++;
+            if (attempts > maxAttempts) {
+                clearInterval(interval);
+                showStatus("DEPLOYMENT TIMEOUT - Check status manually", 'error');
+                isDeploying = false;
+                ui.deployBtn.disabled = false; ui.deployBtn.innerText = "CHECK STATUS";
+                return;
+            }
+
             try {
                 const res = await fetch(`${BACKEND_URL}/api/job-status/${jobId}`);
                 const job = await res.json();
-                
+
                 if (job.state === 'completed') {
                     clearInterval(interval);
                     showStatus("LAUNCH CONFIRMED", 'success');
