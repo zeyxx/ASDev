@@ -51,6 +51,10 @@ function init(deps) {
                 const volRes = await db.get('SELECT SUM(volume24h) as total FROM tokens');
                 const totalVolume = volRes?.total || 0;
 
+                // Get total airdropped PUMP
+                const airdropRes = await db.get('SELECT SUM(CAST(amount AS REAL)) as total FROM airdrop_logs');
+                const totalAirdropped = airdropRes?.total || 0;
+
                 const currentBalance = await connection.getBalance(devKeypair.publicKey);
 
                 const { bcVault, ammVaultAta } = pump.getCreatorFeeVaults(devKeypair.publicKey);
@@ -82,7 +86,7 @@ function init(deps) {
                     logger.debug('Failed to fetch PUMP holdings', { error: e.message });
                 }
 
-                return { stats, launches, logs, currentBalance, pumpHoldings, totalPendingFees, totalVolume };
+                return { stats, launches, logs, currentBalance, pumpHoldings, totalPendingFees, totalVolume, totalAirdropped };
             });
 
             const totalFeesLamports = (cachedHealth.stats.lifetimeFeesLamports || 0) +
@@ -103,7 +107,8 @@ function init(deps) {
                 lastClaimTime: cachedHealth.stats.lastClaimTimestamp || 0,
                 lastClaimAmount: (cachedHealth.stats.lastClaimAmountLamports / LAMPORTS_PER_SOL).toFixed(4),
                 nextCheckTime: cachedHealth.stats.nextCheckTimestamp || (Date.now() + 5*60*1000),
-                totalVolume: cachedHealth.totalVolume
+                totalVolume: cachedHealth.totalVolume,
+                totalAirdropped: cachedHealth.totalAirdropped
             });
         } catch (e) {
             res.status(500).json({ error: "DB Error" });

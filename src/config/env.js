@@ -14,7 +14,7 @@ if (missingVars.length > 0) {
 
 const config = {
     // Server
-    VERSION: "v10.26.35-TWITTER-V2-FIX",
+    VERSION: "v10.26.37-AIRDROP-METRIC",
     PORT: process.env.PORT || 3000,
     NODE_ENV: process.env.NODE_ENV || 'development',
 

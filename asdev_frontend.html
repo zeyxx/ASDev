@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ASDev Launcher v10.26.32</title>
+    <title>ASDev Launcher v10.26.37</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
@@ -149,7 +149,6 @@
             </div>
             <div class="flex flex-col items-end gap-3">
                 <div id="wallet-ui" class="hidden flex items-center gap-3 bg-orange-950 border border-orange-800 p-3 rounded-lg shadow-xl"><span class="w-3 h-3 rounded-full bg-green-500 animate-pulse"></span><span id="wallet-addr" class="font-mono text-sm text-orange-200"></span><span id="wallet-bal" class="font-mono text-sm text-white font-bold ml-2 bg-orange-900/50 px-3 py-1 rounded">0.00 SOL</span><button id="refresh-btn" class="ml-2 text-orange-400 hover:text-white transition p-1.5 hover:bg-orange-800 rounded"><i data-lucide="refresh-cw" width="16"></i></button><button id="disconnect-btn" class="ml-1 text-red-400 hover:text-red-200 transition p-1.5 hover:bg-red-900/30 rounded"><i data-lucide="log-out" width="16"></i></button></div>
-                <!-- Updated Connect Button: Triggers Modal -->
                 <button id="connect-btn" onclick="openWalletModal()" class="bg-orange-900/50 border-2 border-orange-700 text-orange-500 px-8 py-3 rounded-lg font-mono text-sm hover:bg-orange-900/80 transition uppercase tracking-wider font-bold shadow-lg hover:shadow-orange-900/40">Connect Wallet</button>
             </div>
         </div>
@@ -311,7 +310,6 @@
             <h3 class="text-orange-500 font-mono text-sm uppercase tracking-widest border-b border-orange-900/50 pb-2 mb-6">PLATFORM METRICS</h3>
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
                 <div class="metric-card"><div class="metric-label">Lifetime Launches</div><div id="metric-launches" class="metric-value">0</div></div>
-                <!-- CHANGED LABEL: Total Airdropped -->
                 <div class="metric-card"><div class="metric-label">Total $PUMP Airdropped</div><div id="metric-pump" class="metric-value">0</div></div>
                 <!-- CHANGED LABEL -->
                 <div class="metric-card"><div class="metric-label">Total Daily Volume</div><div id="metric-fees" class="metric-value">$0.00</div></div>
@@ -329,30 +327,28 @@
     </div>
 </div>
 
-<!-- NEW: WALLET SELECTION MODAL -->
+<!-- WALLET SELECTION MODAL -->
 <div id="wallet-modal" class="modal">
     <div class="modal-content border-orange-600" style="max-width: 450px;">
         <span class="close-btn" onclick="closeWalletModal()">&times;</span>
         <h3 class="text-orange-500 font-mono text-lg mb-6 uppercase tracking-widest border-b border-orange-900/50 pb-2">SELECT WALLET PROVIDER</h3>
-        
         <div id="wallet-list" class="flex flex-col gap-2">
-            <!-- Buttons injected by JS or hardcoded below -->
             <button onclick="selectWallet('phantom')" class="btn-wallet" id="btn-phantom">
                 <span class="flex items-center gap-3"><i data-lucide="ghost" width="20"></i> Phantom</span>
                 <span id="tag-phantom" class="hidden detected-tag">DETECTED</span>
             </button>
-            
+
             <button onclick="selectWallet('solflare')" class="btn-wallet" id="btn-solflare">
                 <span class="flex items-center gap-3"><i data-lucide="flame" width="20"></i> Solflare</span>
                 <span id="tag-solflare" class="hidden detected-tag">DETECTED</span>
             </button>
-            
+
             <button onclick="selectWallet('backpack')" class="btn-wallet" id="btn-backpack">
                 <span class="flex items-center gap-3"><i data-lucide="backpack" width="20"></i> Backpack</span>
                 <span id="tag-backpack" class="hidden detected-tag">DETECTED</span>
             </button>
         </div>
-        
+
         <p class="text-center text-xs text-orange-400/60 mt-4 font-mono">
             Selecting a wallet will prompt a connection request.
         </p>
@@ -367,7 +363,7 @@
     </div>
 </div>
 
-<!-- NEW: HOLDERS MODAL -->
+<!-- HOLDERS MODAL -->
 <div id="holders-modal" class="modal">
     <div class="modal-content border-orange-600" style="max-width: 400px;">
         <span class="close-btn" onclick="closeHoldersModal()">&times;</span>
@@ -511,11 +507,11 @@
     const FRONTEND_VERSION = "v10.26.37";
     const BACKEND_URL = "https://asdev-1kvy.onrender.com";
     const DEV_WALLET_PUBKEY = "FNLWHjvjptwC7LxycdK3Knqcv5ptC19C9rynn6u2S1tB";
-    const DEPLOYMENT_FEE = 0.02; 
+    const DEPLOYMENT_FEE = 0.02;
     const PUMPFUN_URL_BASE = "https://pump.fun/coin/";
     const PUMP_CONTRACT = "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn";
 
-    // NEW: WALLET STATE
+    // Wallet state
     let activeWalletProvider = null;
     let connectedWalletType = null;
     let userPubkey = null;
@@ -828,8 +824,7 @@
             // Update Top Position Count (Base Points)
             ui.userTopPositions.innerText = data.heldPositionsCount || 0;
             
-            // NEW: Update Created Position Count
-            // UPDATED: Now displaying calculated points (count * 2) instead of raw count
+            // Update Created Position Points (count * 2)
             ui.userCreatedPositions.innerText = (data.createdPositionsCount || 0) * 2;
 
             // Update ASDF Status
@@ -905,12 +900,11 @@
                 
                 if (data.totalLaunches) ui.metricLaunches.innerText = data.totalLaunches; 
                 
-                // UPDATED: Show Total Airdropped Pump
+                // Display Total Airdropped PUMP
                 if (data.totalAirdropped !== undefined) {
-                    // Assuming data.totalAirdropped is raw number, format nicely
                     ui.metricPump.innerText = parseFloat(data.totalAirdropped).toLocaleString('en-US', {maximumFractionDigits: 0});
                 } else if (data.totalPumpTokensBought) {
-                    // Fallback to old metric if API doesn't return new one (backwards compat)
+                    // Fallback for backwards compatibility
                     ui.metricPump.innerText = data.totalPumpTokensBought;
                 }
 
@@ -1354,6 +1348,55 @@
     window.toggleLogModal = toggleLogModal;
     const closeLogModal = () => { ui.logModal.style.display = 'none'; };
     window.closeLogModal = closeLogModal;
+
+    // Wallet Modal Functions
+    const openWalletModal = () => {
+        // Detect available wallets
+        if (window.phantom?.solana) document.getElementById('tag-phantom')?.classList.remove('hidden');
+        if (window.solflare) document.getElementById('tag-solflare')?.classList.remove('hidden');
+        if (window.backpack) document.getElementById('tag-backpack')?.classList.remove('hidden');
+        ui.walletModal.style.display = 'block';
+        lucide.createIcons();
+    };
+    window.openWalletModal = openWalletModal;
+
+    const closeWalletModal = () => { ui.walletModal.style.display = 'none'; };
+    window.closeWalletModal = closeWalletModal;
+
+    const selectWallet = async (walletType) => {
+        closeWalletModal();
+        try {
+            let provider = null;
+            if (walletType === 'phantom' && window.phantom?.solana) {
+                provider = window.phantom.solana;
+            } else if (walletType === 'solflare' && window.solflare) {
+                provider = window.solflare;
+            } else if (walletType === 'backpack' && window.backpack) {
+                provider = window.backpack;
+            }
+
+            if (!provider) {
+                showStatus(`${walletType} wallet not detected. Please install it.`, 'error');
+                return;
+            }
+
+            const resp = await provider.connect();
+            activeWalletProvider = provider;
+            connectedWalletType = walletType;
+            userPubkey = resp.publicKey.toString();
+
+            ui.connectBtn.classList.add('hidden');
+            ui.walletUI.classList.remove('hidden');
+            ui.walletAddr.innerText = userPubkey.slice(0, 4) + "..." + userPubkey.slice(-4);
+
+            refreshWalletBalance();
+            updateHolderStatus();
+            showStatus(`Connected to ${walletType}!`, 'success');
+        } catch (e) {
+            showStatus("Wallet connection failed: " + e.message, 'error');
+        }
+    };
+    window.selectWallet = selectWallet;
 
     // UPDATED: Airdrop Log Toggle with DATE in timestamp
     const toggleAirdropLogModal = async () => {

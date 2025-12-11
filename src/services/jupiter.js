@@ -9,9 +9,10 @@ const logger = require('./logger');
 
 /**
  * Get quote for token swap
+ * Updated: Using new Jupiter lite-api endpoint (Dec 2025)
  */
 async function getQuote(inputMint, outputMint, amountIn, slippageBps = 100) {
-    const url = `https://quote-api.jup.ag/v6/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountIn}&slippageBps=${slippageBps}`;
+    const url = `https://lite-api.jup.ag/swap/v1/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountIn}&slippageBps=${slippageBps}`;
 
     const response = await axios.get(url);
     return response.data;
@@ -19,9 +20,10 @@ async function getQuote(inputMint, outputMint, amountIn, slippageBps = 100) {
 
 /**
  * Get swap transaction
+ * Updated: Using new Jupiter lite-api endpoint (Dec 2025)
  */
 async function getSwapTransaction(quoteResponse, userPublicKey, wrapAndUnwrapSol = true) {
-    const response = await axios.post('https://quote-api.jup.ag/v6/swap', {
+    const response = await axios.post('https://lite-api.jup.ag/swap/v1/swap', {
         quoteResponse,
         userPublicKey: userPublicKey.toString(),
         wrapAndUnwrapSol
