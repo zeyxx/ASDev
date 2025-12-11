@@ -7,6 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.0.6/purify.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Comic+Neue:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <style>
         /* TERMINAL FIRE THEME */
@@ -536,6 +537,19 @@
     let currentGlobalPoints = 0;
     let currentUserPoints = 0;
 
+    // XSS Sanitization helper
+    const sanitize = (html) => DOMPurify.sanitize(html, {
+        ALLOWED_TAGS: ['b', 'i', 'em', 'strong', 'span', 'div', 'a', 'br', 'img', 'table', 'tr', 'td', 'th', 'thead', 'tbody'],
+        ALLOWED_ATTR: ['href', 'target', 'class', 'style', 'src', 'alt', 'width', 'height']
+    });
+
+    // Safe text escaping for user content
+    const escapeHtml = (text) => {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    };
+
     const ui = {
         connectBtn: document.getElementById('connect-btn'), walletUI: document.getElementById('wallet-ui'), walletAddr: document.getElementById('wallet-addr'), walletBal: document.getElementById('wallet-bal'),
         refreshBtn: document.getElementById('refresh-btn'), disconnectBtn: document.getElementById('disconnect-btn'), deployBtn: document.getElementById('deploy-btn'),
@@ -681,22 +695,22 @@
                 <tr>
                     <td class="text-orange-500 font-bold">${index + 1}</td>
                     <td>
-                        <img src="${imgSrc}" onerror="this.src='https://placehold.co/32x32/333/fff?text=?'" class="token-img-sm" alt="icon">
-                        <span class="text-white font-bold">${item.ticker}</span>
+                        <img src="${escapeHtml(imgSrc)}" onerror="this.src='https://placehold.co/32x32/333/fff?text=?'" class="token-img-sm" alt="icon">
+                        <span class="text-white font-bold">${escapeHtml(item.ticker)}</span>
                         ${creatorMark}
                         ${holderMark}
                         ${badge}
-                        <div class="text-[10px] text-orange-300 mt-1 truncate max-w-[150px]">${item.name}</div>
+                        <div class="text-[10px] text-orange-300 mt-1 truncate max-w-[150px]">${escapeHtml(item.name)}</div>
                     </td>
                     <!-- REMOVED NAME COLUMN -->
                     <td class="text-right text-green-400 font-bold font-mono">${formatMcap(displayMcap)}</td>
                     <td class="text-right text-white font-bold">$${displayVol.toLocaleString()}</td>
                     <td class="text-right">
                         <div class="flex gap-2 justify-end items-center">
-                            <button onclick="viewTokenHolders('${item.mint}', '${item.ticker}')" class="text-xs bg-blue-900/50 border border-blue-700 text-blue-300 px-2 py-1 rounded hover:bg-blue-800 hover:text-white transition" title="View Top 50 Holders">
+                            <button onclick="viewTokenHolders('${escapeHtml(item.mint)}', '${escapeHtml(item.ticker)}')" class="text-xs bg-blue-900/50 border border-blue-700 text-blue-300 px-2 py-1 rounded hover:bg-blue-800 hover:text-white transition" title="View Top 50 Holders">
                                 👥
                             </button>
-                            <a href="${tradeLink}" target="_blank" class="text-xs bg-orange-900/50 border border-orange-700 text-orange-300 px-2 py-1 rounded hover:bg-orange-800 hover:text-white transition">TRADE</a>
+                            <a href="${escapeHtml(tradeLink)}" target="_blank" class="text-xs bg-orange-900/50 border border-orange-700 text-orange-300 px-2 py-1 rounded hover:bg-orange-800 hover:text-white transition">TRADE</a>
                         </div>
                     </td>
                 </tr>`;
@@ -832,8 +846,8 @@
                     ui.tickerContent.innerHTML = '<span class="ticker-item text-orange-600">NO RECENT LAUNCHES YET... START ONE!</span>'; 
                     return; 
                 } 
-                const repeatedLaunches = Array(5).fill(launches).flat(); 
-                const tickerItems = repeatedLaunches.map(launch => `<span class="ticker-item"><span class="text-white font-bold">LAUNCHED:</span><span class="text-white">${launch.userSnippet}...</span><span class="text-orange-400">-></span><a href="${PUMPFUN_URL_BASE}${launch.mint}" target="_blank" class="font-bold underline">${launch.ticker}</a></span>`).join(''); 
+                const repeatedLaunches = Array(5).fill(launches).flat();
+                const tickerItems = repeatedLaunches.map(launch => `<span class="ticker-item"><span class="text-white font-bold">LAUNCHED:</span><span class="text-white">${escapeHtml(launch.userSnippet)}...</span><span class="text-orange-400">-></span><a href="${PUMPFUN_URL_BASE}${escapeHtml(launch.mint)}" target="_blank" class="font-bold underline">${escapeHtml(launch.ticker)}</a></span>`).join('');
                 ui.tickerContent.innerHTML = tickerItems; 
             } else {
                 // Server returned non-200 status

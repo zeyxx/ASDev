@@ -50,7 +50,9 @@ async function claimCreatorFees(deps) {
             claimedSomething = true;
             totalClaimed += bcInfo.lamports;
         }
-    } catch (e) {}
+    } catch (e) {
+        logger.debug('Failed to claim BC fees', { error: e.message });
+    }
 
     // Claim AMM Fees
     try {
@@ -88,7 +90,9 @@ async function claimCreatorFees(deps) {
             claimedSomething = true;
             totalClaimed += Number(bal.value.amount);
         }
-    } catch (e) {}
+    } catch (e) {
+        logger.debug('Failed to claim AMM fees', { error: e.message });
+    }
 
     if (claimedSomething) {
         tx.feePayer = devKeypair.publicKey;
@@ -257,13 +261,17 @@ async function runPurchaseAndFees(deps) {
         try {
             const bcInfo = await connection.getAccountInfo(bcVault);
             if (bcInfo) totalPendingFees = totalPendingFees.add(new BN(bcInfo.lamports));
-        } catch (e) {}
+        } catch (e) {
+            logger.debug('Failed to fetch BC fees', { error: e.message });
+        }
 
         try {
             const ammVaultAtaKey = await ammVaultAta;
             const bal = await connection.getTokenAccountBalance(ammVaultAtaKey);
             if (bal.value.amount) totalPendingFees = totalPendingFees.add(new BN(bal.value.amount));
-        } catch (e) {}
+        } catch (e) {
+            logger.debug('Failed to fetch AMM fees', { error: e.message });
+        }
 
         logData.feesCollected = totalPendingFees.toNumber() / LAMPORTS_PER_SOL;
 

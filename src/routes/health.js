@@ -7,9 +7,27 @@ const { LAMPORTS_PER_SOL } = require('@solana/web3.js');
 const { getAssociatedTokenAddress } = require('@solana/spl-token');
 const config = require('../config/env');
 const { TOKENS, PROGRAMS } = require('../config/constants');
-const { pump } = require('../services');
+const { pump, logger } = require('../services');
 
 const router = express.Router();
+
+// Admin auth middleware for sensitive endpoints
+const adminAuth = (req, res, next) => {
+    const apiKey = req.headers['x-admin-key'];
+    const expectedKey = process.env.ADMIN_API_KEY;
+
+    // If no admin key configured, block access in production
+    if (!expectedKey && process.env.NODE_ENV === 'production') {
+        return res.status(403).json({ error: 'Debug endpoint disabled in production' });
+    }
+
+    // If admin key configured, require it
+    if (expectedKey && apiKey !== expectedKey) {
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    next();
+};
 
 /**
  * Initialize routes with dependencies
@@ -41,13 +59,17 @@ function init(deps) {
                 try {
                     const bcInfo = await connection.getAccountInfo(bcVault);
                     if (bcInfo) totalPendingFees += bcInfo.lamports;
-                } catch (e) {}
+                } catch (e) {
+                    logger.debug('Failed to fetch bonding curve info', { error: e.message });
+                }
 
                 try {
                     const ammVaultAtaKey = await ammVaultAta;
                     const wsolBal = await connection.getTokenAccountBalance(ammVaultAtaKey);
                     if (wsolBal.value.amount) totalPendingFees += Number(wsolBal.value.amount);
-                } catch (e) {}
+                } catch (e) {
+                    logger.debug('Failed to fetch AMM vault balance', { error: e.message });
+                }
 
                 let pumpHoldings = 0;
                 try {
@@ -56,7 +78,9 @@ function init(deps) {
                     );
                     const tokenBal = await connection.getTokenAccountBalance(devPumpAta);
                     if (tokenBal.value.uiAmount) pumpHoldings = tokenBal.value.uiAmount;
-                } catch (e) {}
+                } catch (e) {
+                    logger.debug('Failed to fetch PUMP holdings', { error: e.message });
+                }
 
                 return { stats, launches, logs, currentBalance, pumpHoldings, totalPendingFees, totalVolume };
             });
@@ -86,15 +110,27 @@ function init(deps) {
         }
     });
 
-    // Debug logs
-    router.get('/debug/logs', (req, res) => {
+    // Debug logs (protected endpoint)
+    router.get('/debug/logs', adminAuth, (req, res) => {
         const fs = require('fs');
         const path = require('path');
-        const logPath = path.join(config.DISK_ROOT, 'server_debug.log');
+
+        // Validate and sanitize path
+        const logPath = path.resolve(config.DISK_ROOT, 'server_debug.log');
+        const expectedBase = path.resolve(config.DISK_ROOT);
+
+        if (!logPath.startsWith(expectedBase)) {
+            logger.warn('Path traversal attempt detected');
+            return res.status(403).json({ error: 'Invalid path' });
+        }
 
         if (fs.existsSync(logPath)) {
             const stats = fs.statSync(logPath);
             const stream = fs.createReadStream(logPath, { start: Math.max(0, stats.size - 50000) });
+            stream.on('error', (err) => {
+                logger.error('Error reading log file', { error: err.message });
+                res.status(500).send('Error reading log file');
+            });
             stream.pipe(res);
         } else {
             res.send("No logs yet.");

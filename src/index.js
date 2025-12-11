@@ -6,6 +6,8 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const { Connection, Keypair, LAMPORTS_PER_SOL, Transaction, SystemProgram } = require('@solana/web3.js');
 const { Wallet } = require('@coral-xyz/anchor');
 const bs58 = require('bs58');
@@ -54,8 +56,34 @@ async function main() {
 
     // Create Express app
     const app = express();
+
+    // Security middleware
+    app.use(helmet({
+        contentSecurityPolicy: false, // Disable CSP for frontend flexibility
+        crossOriginEmbedderPolicy: false
+    }));
     app.use(cors());
     app.use(express.json({ limit: '50mb' }));
+
+    // Rate limiting
+    const apiLimiter = rateLimit({
+        windowMs: 15 * 60 * 1000, // 15 minutes
+        max: 100, // 100 requests per window
+        message: { error: 'Too many requests, please try again later' },
+        standardHeaders: true,
+        legacyHeaders: false
+    });
+
+    const deployLimiter = rateLimit({
+        windowMs: 60 * 1000, // 1 minute
+        max: 3, // 3 deployments per minute
+        message: { error: 'Too many deployment requests, please wait' },
+        standardHeaders: true,
+        legacyHeaders: false
+    });
+
+    app.use('/api/', apiLimiter);
+    app.use('/api/deploy', deployLimiter);
 
     // Serve frontend
     app.get('/', (req, res) => {
@@ -177,8 +205,25 @@ async function main() {
     });
 }
 
+// Graceful shutdown
+const shutdown = async (signal) => {
+    logger.info(`${signal} received, shutting down gracefully...`);
+    try {
+        const db = database.getDB();
+        if (db) await db.close();
+        redis.getConnection()?.disconnect();
+        logger.info('Cleanup complete, exiting');
+    } catch (e) {
+        logger.error('Shutdown error', { error: e.message });
+    }
+    process.exit(0);
+};
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
 // Run main
 main().catch(err => {
-    logger.error("Fatal error", { error: err.message });
+    logger.error("Fatal error", { error: err.message, stack: err.stack });
     process.exit(1);
 });
