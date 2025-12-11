@@ -14,6 +14,7 @@ dump.rdb
 
 # Vanity Grinder (cloned separately)
 asdf-vanity-grinder/
+start_grinder.sh
 vanity_pool.json
 vanity_mints.json
 
