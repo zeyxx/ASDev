@@ -128,7 +128,12 @@ VANITY_GRINDER_ENABLED=true npm start
 ### The lazy way
 
 ```bash
-VANITY_GRINDER_ENABLED=true ./scripts/start.sh
+# Start the grinder first (in background)
+cd asdf-vanity-grinder && ./start_grinder.sh &
+cd ..
+
+# Then start the server
+VANITY_GRINDER_ENABLED=true npm start
 ```
 
 ## API Endpoints
